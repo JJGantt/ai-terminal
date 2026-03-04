@@ -3,10 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-interface Props {
-  id: string;
-  active: boolean;
-}
+interface Props { id: string; active: boolean; }
 
 export default function TerminalTab({ id, active }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -14,6 +11,7 @@ export default function TerminalTab({ id, active }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
 
   useEffect(() => {
+    console.log('[TerminalTab] mounting', id);
     const term = new Terminal({
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       fontSize: 13,
@@ -27,34 +25,30 @@ export default function TerminalTab({ id, active }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Spawn PTY
+    let cleanupData: (() => void) | null = null;
+
     window.pty.create(id).then(() => {
-      // Stream PTY output into terminal
-      const cleanup = window.pty.onData(id, (data) => term.write(data));
-
-      // Send terminal input to PTY
-      term.onData((data) => window.pty.write(id, data));
-
-      // Resize PTY when terminal resizes
+      console.log('[TerminalTab] pty created', id);
+      cleanupData = window.pty.onData(id, data => term.write(data));
+      term.onData(data => window.pty.write(id, data));
       term.onResize(({ cols, rows }) => window.pty.resize(id, cols, rows));
-
-      return cleanup;
-    });
+      window.pty.onExit(id, () => {
+        console.log('[TerminalTab] pty exited', id);
+        term.write('\r\n[session ended]\r\n');
+      });
+    }).catch(err => console.error('[TerminalTab] pty create failed', err));
 
     return () => {
+      cleanupData?.();
       window.pty.kill(id);
       term.dispose();
     };
   }, [id]);
 
-  // Fit on visibility change
   useEffect(() => {
-    if (active && fitRef.current) {
-      setTimeout(() => fitRef.current?.fit(), 0);
-    }
+    if (active) setTimeout(() => fitRef.current?.fit(), 0);
   }, [active]);
 
-  // Fit on window resize
   useEffect(() => {
     const onResize = () => { if (active) fitRef.current?.fit(); };
     window.addEventListener('resize', onResize);
