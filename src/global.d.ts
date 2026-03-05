@@ -2,13 +2,38 @@
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
+interface SessionInfo {
+  id: string;
+  title: string;
+  timestamp: string;
+  mtime: number;
+  project: string;
+  source?: string;
+}
+
 interface Window {
+  sessions: {
+    list: (opts?: { since?: number; date?: string }) => Promise<SessionInfo[]>;
+    dates: () => Promise<string[]>;
+    hide: (sessionId: string) => Promise<boolean>;
+    contextMenu: (sessionId: string) => void;
+    onConfirmHide: (cb: (sessionId: string) => void) => () => void;
+  };
   pty: {
-    create: (id: string) => Promise<string>;
+    create: (id: string, resumeSessionId?: string) => Promise<string>;
     write: (id: string, data: string) => void;
     resize: (id: string, cols: number, rows: number) => void;
     kill: (id: string) => void;
     onData: (id: string, cb: (data: string) => void) => () => void;
     onExit: (id: string, cb: () => void) => () => void;
+    notifyActive: (id: string) => void;
+    onRename: (cb: (tabId: string, title: string) => void) => () => void;
+    contextMenu: (id: string) => void;
+    setName: (id: string, name: string) => void;
+    onStartRename: (cb: (tabId: string) => void) => () => void;
+    onSessionMapped: (cb: (tabId: string, sessionId: string) => void) => () => void;
+  };
+  voice: {
+    onStateChange: (cb: (state: string, tabId: string | null) => void) => () => void;
   };
 }
