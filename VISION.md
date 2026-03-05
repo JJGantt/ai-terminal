@@ -21,7 +21,7 @@ unified session manager.
 1. Claude Code runs inside tmux sessions (one per tab)
 2. Stop hook fires after every exchange → logs to history, reports session ID to app
 3. App discovers session ID → triggers Haiku tab naming → caches name in history
-4. Session list reads from history (primary) + JSONL files (fallback)
+4. Session list reads from history (primary) + JSONL files (fallback), refreshes every 30s
 5. History syncs to other devices → sessions available everywhere
 
 ### Session Identity
@@ -36,28 +36,32 @@ unified session manager.
 - Browse all sessions: local, Telegram, Pi, phone — anything with history
 - Progressive loading: last 24h immediate, then expandable date groups
 - Haiku-generated 2-3 word names for every session
-- Click to resume any session in a new tab
+- Click to resume any session in a new tab (deduplicates already-open sessions)
 - Right-click tabs: rename manually or regenerate name from conversation context
+- Right-click sessions: hide from list
 
 ### Tabbed Claude Sessions
 - Each tab is a tmux session running `claude --dangerously-skip-permissions`
-- Drag-and-drop tab reordering with visual feedback
+- Drag-and-drop tab reordering via @dnd-kit/sortable
 - Auto-naming via Haiku after first exchange
-- Keyboard shortcuts: Cmd+T (new), Cmd+W (close), Cmd+1-9 (switch)
+- Bare arrow keys to switch tabs; Option+arrows for cursor movement in terminal
+- File drag-and-drop pastes file paths into terminal
+- Pop out to iTerm: right-click → Open in Terminal (detaches and opens in iTerm)
 
 ### Native Voice Control
-- Right Shift (global, via uiohook-napi): start/stop recording
+- Right Shift (global, via uiohook-napi): start/stop recording in current tab
+- Right Option + Right Shift: open new tab + start recording simultaneously
 - Enter while recording: transcribe + submit
 - Escape: cancel recording
 - Adaptive transcription: <15s local whisper.cpp, >=15s OpenAI Whisper API
 - Voice substitutions from shared config
-- Visual indicator: red dot (recording), amber (transcribing)
+- Visual indicator: red pulsing dot (recording), amber (transcribing) — on the recording tab
+- Recording targets the tab that was active at recording start, not at finish
 
 ### Cross-Device (Optional Layer)
 - History syncs bidirectionally between Mac and Pi
 - Pi is always-on — phone sessions always available on Mac
 - Mac sessions available on phone when Mac is on
-- Pi proxies session resumption to Mac (repos live there)
 - Same UI could run on phone, backed by the same history data
 
 ## The Hub
@@ -66,7 +70,7 @@ ai-terminal is the unified interface for everything — not just Claude sessions
 The Python MCP servers, Telegram bots, and TV dashboard all serve the same data
 through different interfaces. This app consolidates them into one codebase.
 
-### Integrated Modules (replacing Python MCPs)
+### Integrated Modules (future — replacing Python MCPs)
 - **Sessions** — browse, resume, search across all devices and channels
 - **Lists** — todos, grocery, custom lists (replaces mcp-data list functions)
 - **Workouts** — logging, progression history, charts (replaces mcp-data workout functions)
@@ -79,6 +83,12 @@ through different interfaces. This app consolidates them into one codebase.
 Each module is a JS/TS internal module, not a separate process. Data is JSON,
 same format as today, same sync mechanism. The left panel becomes a nav bar
 between sessions and these views.
+
+### Planned: Quick Hotkey Commands
+Modifier combos that attach context to voice recordings, usable from anywhere:
+- Screenshot + voice: capture screen and record a voice message together
+- Clipboard + voice: paste clipboard content with a voice instruction
+- General pattern: hotkey captures context, starts recording, sends both to a tab
 
 ## For Other Users
 
