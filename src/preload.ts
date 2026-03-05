@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 contextBridge.exposeInMainWorld('sessions', {
   list: (opts?: { since?: number; date?: string }) => ipcRenderer.invoke('sessions:list', opts),
@@ -45,6 +45,15 @@ contextBridge.exposeInMainWorld('pty', {
     ipcRenderer.on('tab:session-mapped', handler);
     return () => ipcRenderer.removeListener('tab:session-mapped', handler);
   },
+  onPoppedOut: (cb: (tabId: string) => void) => {
+    const handler = (_: unknown, tabId: string) => cb(tabId);
+    ipcRenderer.on('tab:popped-out', handler);
+    return () => ipcRenderer.removeListener('tab:popped-out', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld('files', {
+  getPath: (file: File) => webUtils.getPathForFile(file),
 });
 
 contextBridge.exposeInMainWorld('voice', {
@@ -53,4 +62,10 @@ contextBridge.exposeInMainWorld('voice', {
     ipcRenderer.on('voice:state', handler);
     return () => ipcRenderer.removeListener('voice:state', handler);
   },
+  onNewTabRecord: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('voice:new-tab-record', handler);
+    return () => ipcRenderer.removeListener('voice:new-tab-record', handler);
+  },
+  newTabReady: (tabId: string) => ipcRenderer.send('voice:new-tab-ready', tabId),
 });

@@ -32,8 +32,14 @@ interface Window {
     setName: (id: string, name: string) => void;
     onStartRename: (cb: (tabId: string) => void) => () => void;
     onSessionMapped: (cb: (tabId: string, sessionId: string) => void) => () => void;
+    onPoppedOut: (cb: (tabId: string) => void) => () => void;
+  };
+  files: {
+    getPath: (file: File) => string;
   };
   voice: {
     onStateChange: (cb: (state: string, tabId: string | null) => void) => () => void;
+    onNewTabRecord: (cb: () => void) => () => void;
+    newTabReady: (tabId: string) => void;
   };
 }

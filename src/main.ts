@@ -339,6 +339,7 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
       { env },
     );
     execSync(`${TMUX} set-option -t '${sessionName}' status off`, { env });
+    execSync(`${TMUX} set-option -t '${sessionName}' mouse off`, { env });
   } catch (err) {
     log('tmux new-session failed:', (err as Error).message);
     throw err;
@@ -483,6 +484,8 @@ function generateName(sessionId: string, tabId: string, pairs: { user: string; a
 ipcMain.on('tab:context-menu', (_e, tabId: string) => {
   const sessionId = tabSessionIds.get(tabId);
 
+  const sessionName = tmuxSessions.get(tabId);
+
   const menu = Menu.buildFromTemplate([
     {
       label: 'Rename...',
@@ -505,6 +508,31 @@ ipcMain.on('tab:context-menu', (_e, tabId: string) => {
         const pairs = readConversationPairs(jsonlPath, 5);
         if (pairs.length) {
           generateName(sessionId, tabId, pairs);
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Open in Terminal',
+      enabled: !!sessionName,
+      click: () => {
+        if (!sessionName) return;
+        log('pop out to iTerm:', sessionName);
+        // Detach our PTY so iTerm can attach
+        ptySessions.get(tabId)?.kill();
+        ptySessions.delete(tabId);
+        // Open iTerm attached to the tmux session
+        const script = `tell application "iTerm"
+          activate
+          create window with default profile command "${TMUX} attach-session -t '${sessionName}'"
+        end tell`;
+        execFile('osascript', ['-e', script], (err) => {
+          if (err) log('pop out failed:', err.message);
+        });
+        // Remove tab from app
+        tmuxSessions.delete(tabId);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('tab:popped-out', tabId);
         }
       },
     },

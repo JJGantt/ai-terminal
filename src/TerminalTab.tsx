@@ -25,6 +25,15 @@ export default function TerminalTab({ id, active, resumeSessionId }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
+    // Bare left/right arrows → tab navigation (handled by App.tsx document listener)
+    // Option+arrows → pass through to terminal as normal cursor movement
+    term.attachCustomKeyEventHandler((e) => {
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        return false; // don't let xterm process it
+      }
+      return true;
+    });
+
     // Refit whenever the container size changes (window resize, panel toggle, etc.)
     const el = containerRef.current!;
     const ro = new ResizeObserver(() => {

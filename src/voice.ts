@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
-import { systemPreferences, BrowserWindow } from 'electron';
+import { systemPreferences, BrowserWindow, ipcMain } from 'electron';
 
 type State = 'idle' | 'recording' | 'transcribing';
 
@@ -58,6 +58,7 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
   let watchdog: ReturnType<typeof setTimeout> | null = null;
   let recordingStartedAt = 0;
   let recordingTabId: string | null = null;
+  let rightOptionHeld = false;
 
   // Check permissions
   const trusted = systemPreferences.isTrustedAccessibilityClient(true);
@@ -231,13 +232,32 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     });
   }
 
-  // Key listener via uiohook
-  // Right Shift keycode: 0x0036 (54 decimal) is the macOS virtual keycode
-  // uiohook uses its own key codes — UiohookKey.ShiftRight
+  // Right Option + Right Shift → new tab + record
+  // Recording starts immediately; tab creation happens in parallel
+  ipcMain.on('voice:new-tab-ready', (_e, tabId: string) => {
+    log('voice: new tab ready:', tabId);
+    recordingTabId = tabId;
+    // Update the voice indicator to show on the correct tab
+    setState(state);
+  });
+
+  // Key listeners
   uIOhook.on('keydown', (e) => {
-    if (e.keycode === UiohookKey.ShiftRight) {
+    if (e.keycode === UiohookKey.AltRight) {
+      rightOptionHeld = true;
+    } else if (e.keycode === UiohookKey.ShiftRight) {
       if (state === 'idle') {
-        startRecording();
+        if (rightOptionHeld) {
+          // Start recording immediately, create tab in parallel
+          startRecording();
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            log('voice: requesting new tab for recording');
+            win.webContents.send('voice:new-tab-record');
+          }
+        } else {
+          startRecording();
+        }
       } else if (state === 'recording') {
         stopAndTranscribe();
       }
@@ -251,8 +271,14 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     }
   });
 
+  uIOhook.on('keyup', (e) => {
+    if (e.keycode === UiohookKey.AltRight) {
+      rightOptionHeld = false;
+    }
+  });
+
   uIOhook.start();
-  log('voice: uiohook started, listening for Right Shift');
+  log('voice: uiohook started, listening for Right Shift / Right Option+Shift');
 
   return {
     stop() {

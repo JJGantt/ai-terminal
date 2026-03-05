@@ -69,6 +69,46 @@ export default function App() {
 
   useEffect(() => { window.pty.notifyActive(activeId); }, [activeId]);
 
+  // Drag-and-drop files → paste path into active terminal
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => e.preventDefault();
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      const files = e.dataTransfer?.files;
+      if (!files?.length) return;
+      const paths = Array.from(files).map(f => window.files.getPath(f)).filter(Boolean);
+      if (paths.length) {
+        const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
+        window.pty.write(activeId, escaped);
+      }
+    };
+    document.addEventListener('dragover', onDragOver);
+    document.addEventListener('drop', onDrop);
+    return () => {
+      document.removeEventListener('dragover', onDragOver);
+      document.removeEventListener('drop', onDrop);
+    };
+  }, [activeId]);
+
+  // Bare left/right arrows switch tabs (Option+arrows pass through to terminal)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        setTabs(prev => {
+          const idx = prev.findIndex(t => t.id === activeId);
+          if (idx === -1) return prev;
+          const next = e.key === 'ArrowLeft' ? idx - 1 : idx + 1;
+          if (next >= 0 && next < prev.length) setActiveId(prev[next].id);
+          return prev;
+        });
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [activeId]);
+
   const [voiceState, setVoiceState] = useState<string>('idle');
   const [voiceTabId, setVoiceTabId] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
@@ -90,6 +130,17 @@ export default function App() {
       setTabs(prev => prev.map(t => t.id === tabId ? { ...t, label: title } : t));
     });
   }, []);
+
+  // Right Option + Right Shift → create new tab and start recording in it
+  useEffect(() => {
+    return window.voice.onNewTabRecord(() => {
+      const tab = makeTab();
+      setTabs(prev => [...prev, tab]);
+      setActiveId(tab.id);
+      window.voice.newTabReady(tab.id);
+    });
+  }, []);
+
 
   useEffect(() => {
     return window.pty.onSessionMapped((tabId, sessionId) => {
@@ -119,11 +170,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (panelOpen) {
-      // Load last 24h sessions + available dates
+    if (!panelOpen) return;
+    // Load immediately, then refresh every 30s
+    const refresh = () => {
       window.sessions.list().then(setSessions);
       window.sessions.dates().then(setDateGroups);
-    }
+    };
+    refresh();
+    const interval = setInterval(refresh, 30_000);
+    return () => clearInterval(interval);
   }, [panelOpen]);
 
   const toggleDate = useCallback((date: string) => {
@@ -226,6 +281,13 @@ export default function App() {
       return next;
     });
   }, [activeId]);
+
+  // Pop out to iTerm → close the tab in the app
+  useEffect(() => {
+    return window.pty.onPoppedOut((tabId) => {
+      closeTab(tabId);
+    });
+  }, [closeTab]);
 
   return (
     <div className="app">
