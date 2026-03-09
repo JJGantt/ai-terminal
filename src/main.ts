@@ -523,6 +523,10 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
   // For resumed sessions, apply cached name + notify renderer of mapping
   if (resumeSessionId) {
     tabSessionIds.set(id, resumeSessionId);
+    if (nameCache[resumeSessionId]) {
+      tabNames.set(id, nameCache[resumeSessionId]);
+      broadcastSessions();
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('tab:session-mapped', id, resumeSessionId);
       if (nameCache[resumeSessionId]) {
@@ -627,6 +631,8 @@ function generateName(sessionId: string, tabId: string, pairs: { user: string; a
     log('tab naming:', sessionId, '→', name);
     nameCache[sessionId] = name;
     saveNameCache();
+    tabNames.set(tabId, name);
+    broadcastSessions();
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('tab:rename', tabId, name);
