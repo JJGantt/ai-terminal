@@ -29,6 +29,8 @@ function playSound(name: string) {
   spawn('afplay', [path.join(SOUNDS, `${name}.aiff`)], { detached: true, stdio: 'ignore' }).unref();
 }
 
+const PHONE_WAV_PATH = '/tmp/ai-terminal-phone-voice.wav';
+
 function loadSubs(): Array<{ word: string; replacement: string }> {
   try {
     const data = JSON.parse(fs.readFileSync(SUBS_PATH, 'utf-8'));
@@ -46,6 +48,57 @@ function applySubs(text: string): string {
     result = result.replace(new RegExp(escaped, 'gi'), replacement);
   }
   return result.trim();
+}
+
+// Exported for use by the phone companion WS handler in main.ts
+export function transcribeAudioFile(
+  audioPath: string,
+  durationS: number,
+  log: (...args: unknown[]) => void,
+  cb: (text: string | null) => void,
+): void {
+  const useAPI = durationS >= ADAPTIVE_THRESHOLD_S;
+  log(`[phone voice] ${durationS.toFixed(1)}s → ${useAPI ? 'API' : 'local'}`);
+
+  function done(raw: string | null) {
+    cb(raw ? applySubs(raw) : null);
+  }
+
+  if (useAPI) {
+    let apiKey: string;
+    try {
+      apiKey = fs.readFileSync(OPENAI_KEY_FILE, 'utf-8').trim();
+    } catch {
+      log('[phone voice] no API key, using local');
+      execFile(WHISPER, ['-m', WHISPER_MODEL, '-f', audioPath, '--no-prints', '-nt'], (err, stdout) => {
+        done(err ? null : stdout.trim() || null);
+      });
+      return;
+    }
+    execFile('/usr/bin/curl', [
+      '-sS', '-X', 'POST',
+      'https://api.openai.com/v1/audio/transcriptions',
+      '-H', `Authorization: Bearer ${apiKey}`,
+      '-F', `file=@${audioPath}`,
+      '-F', 'model=whisper-1',
+      '-F', 'response_format=json',
+      '-F', 'language=en',
+    ], (err, stdout) => {
+      if (err) {
+        log('[phone voice] API error, falling back to local:', err.message);
+        execFile(WHISPER, ['-m', WHISPER_MODEL, '-f', audioPath, '--no-prints', '-nt'], (e2, out) => {
+          done(e2 ? null : out.trim() || null);
+        });
+        return;
+      }
+      try { done(JSON.parse(stdout).text?.trim() || null); }
+      catch { done(null); }
+    });
+  } else {
+    execFile(WHISPER, ['-m', WHISPER_MODEL, '-f', audioPath, '--no-prints', '-nt'], (err, stdout) => {
+      done(err ? null : stdout.trim() || null);
+    });
+  }
 }
 
 export function initVoice(deps: VoiceDeps): { stop: () => void } {

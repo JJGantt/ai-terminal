@@ -7,7 +7,7 @@ import { execSync, execFile } from 'node:child_process';
 import started from 'electron-squirrel-startup';
 import pty from 'node-pty';
 import { WebSocketServer, WebSocket } from 'ws';
-import { initVoice } from './voice';
+import { initVoice, transcribeAudioFile } from './voice';
 import { loadConfig } from './config';
 
 if (started) app.quit();
@@ -90,6 +90,18 @@ wsServer.on('connection', (ws: WebSocket) => {
         case 'list':
           ws.send(JSON.stringify({ type: 'sessions', tabs: getTabList() }));
           break;
+        case 'voice_audio': {
+          const { tabId, data, durationS } = msg;
+          const audioPath = '/tmp/ai-terminal-phone-voice.wav';
+          fs.writeFileSync(audioPath, Buffer.from(data, 'base64'));
+          log(`phone voice: received ${durationS?.toFixed(1)}s audio for tab ${tabId}`);
+          transcribeAudioFile(audioPath, durationS || 0, log, (text) => {
+            if (!text) { log('phone voice: empty transcription'); return; }
+            log('phone voice: transcribed:', text.slice(0, 100));
+            ptySessions.get(tabId)?.write(text + '\r');
+          });
+          break;
+        }
       }
     } catch (e) {
       log('ws error:', (e as Error).message);
