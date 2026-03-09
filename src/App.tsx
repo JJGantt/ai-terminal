@@ -8,11 +8,6 @@ import './App.css';
 interface Tab { id: string; label: string; resumeSessionId?: string; }
 
 
-const THINKING = [
-  { label: 'Think',      cmd: 'think' },
-  { label: 'Think Hard', cmd: 'think hard' },
-  { label: 'Ultrathink', cmd: 'ultrathink' },
-] as const;
 
 let counter = 1;
 const makeTab = (): Tab => ({ id: crypto.randomUUID(), label: `Session ${counter++}` });
@@ -494,15 +489,14 @@ export default function App() {
                   Check Usage
                 </button>
                 <div className="settings-group-label">Model</div>
-                <button className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, '\x1b/model\r')}>
-                  Choose Model…
-                </button>
-                <div className="settings-group-label">Thinking</div>
-                {THINKING.map(t => (
-                  <button key={t.cmd} className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, `${t.cmd} `)}>
-                    {t.label}
+                {(['opus', 'sonnet', 'haiku'] as const).map(alias => (
+                  <button key={alias} className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, `\x1b/model ${alias}\r`)}>
+                    {alias.charAt(0).toUpperCase() + alias.slice(1)}
                   </button>
                 ))}
+                <button className="settings-cmd-btn" style={{ color: '#666', fontSize: '11px' }} onClick={() => window.pty.write(activeIdRef.current!, '\x1b/model\r')}>
+                  Browse all…
+                </button>
               </div>
             )}
           </div>

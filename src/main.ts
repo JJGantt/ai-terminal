@@ -91,15 +91,14 @@ wsServer.on('connection', (ws: WebSocket) => {
           ws.send(JSON.stringify({ type: 'sessions', tabs: getTabList() }));
           break;
         case 'voice_audio': {
-          const { tabId, data, durationS, prefix } = msg;
+          const { tabId, data, durationS } = msg;
           const audioPath = '/tmp/ai-terminal-phone-voice.wav';
           fs.writeFileSync(audioPath, Buffer.from(data, 'base64'));
-          log(`phone voice: received ${durationS?.toFixed(1)}s audio for tab ${tabId}${prefix ? ` [prefix: ${prefix}]` : ''}`);
+          log(`phone voice: received ${durationS?.toFixed(1)}s audio for tab ${tabId}`);
           transcribeAudioFile(audioPath, durationS || 0, log, (text) => {
             if (!text) { log('phone voice: empty transcription'); return; }
-            const fullText = prefix ? `${prefix}${text}` : text;
-            log('phone voice: transcribed:', fullText.slice(0, 120));
-            ptySessions.get(tabId)?.write(fullText + '\r');
+            log('phone voice: transcribed:', text.slice(0, 100));
+            ptySessions.get(tabId)?.write(text + '\r');
           });
           break;
         }
