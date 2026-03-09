@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, WebContents } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -100,6 +100,26 @@ wsServer.on('connection', (ws: WebSocket) => {
             log('phone voice: transcribed:', text.slice(0, 100));
             ptySessions.get(tabId)?.write(text + '\r');
           });
+          break;
+        }
+        case 'new_tab': {
+          const tabId = `phone-${Date.now()}`;
+          spawnPty(tabId, undefined, null);
+          ws.send(JSON.stringify({ type: 'tab_created', tabId }));
+          break;
+        }
+        case 'resume_tab': {
+          const tabId = `phone-${Date.now()}`;
+          spawnPty(tabId, msg.sessionId, null);
+          ws.send(JSON.stringify({ type: 'tab_created', tabId }));
+          break;
+        }
+        case 'history_request': {
+          const sessions = getHistorySessions(Date.now() - 7 * 86400000)
+            .sort((a, b) => b.mtime - a.mtime)
+            .slice(0, 50)
+            .map(s => ({ id: s.id, title: nameCache[s.id] || s.title, timestamp: s.timestamp }));
+          ws.send(JSON.stringify({ type: 'history', sessions }));
           break;
         }
       }
@@ -454,7 +474,7 @@ function resolveSessionCwd(sessionId: string): string {
   return defaultCwd;
 }
 
-ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
+function spawnPty(id: string, resumeSessionId: string | undefined, sender: WebContents | null) {
   log('creating pty:', id, resumeSessionId ? `(resuming ${resumeSessionId})` : '');
 
   const env = getCleanEnv();
@@ -476,38 +496,32 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
   tabWorking.set(id, false);
   broadcastSessions();
 
-  let hasBeenIdle = false; // Only track working/done after first idle (startup complete)
+  let hasBeenIdle = false;
   let wasWorking = false;
   ptyProcess.onData((data) => {
     appendScrollback(id, data);
     broadcastData(id, data);
-    if (!event.sender.isDestroyed()) {
-      // Detect Claude status from OSC title sequences: ESC]0;<title>BEL
-      // ✳ = idle/done, ⠂/⠐ = working (spinner frames)
-      const titleMatch = data.match(/\x1b\]0;(.*?)\x07/);
-      if (titleMatch) {
-        const title = titleMatch[1];
-        if (title.startsWith('\u2733')) {
-          // ✳ — Claude is idle/done
-          if (wasWorking) {
-            event.sender.send('tab:bell', id);
-            wasWorking = false;
-            tabWorking.set(id, false);
-            broadcastSessions();
-          }
-          hasBeenIdle = true;
-        } else if (hasBeenIdle) {
-          // Spinner after idle — Claude is working on user input
-          if (!wasWorking) {
-            event.sender.send('tab:working', id);
-            wasWorking = true;
-            tabWorking.set(id, true);
-            broadcastSessions();
-          }
+    const titleMatch = data.match(/\x1b\]0;(.*?)\x07/);
+    if (titleMatch) {
+      const title = titleMatch[1];
+      if (title.startsWith('\u2733')) {
+        if (wasWorking) {
+          if (sender && !sender.isDestroyed()) sender.send('tab:bell', id);
+          wasWorking = false;
+          tabWorking.set(id, false);
+          broadcastSessions();
+        }
+        hasBeenIdle = true;
+      } else if (hasBeenIdle) {
+        if (!wasWorking) {
+          if (sender && !sender.isDestroyed()) sender.send('tab:working', id);
+          wasWorking = true;
+          tabWorking.set(id, true);
+          broadcastSessions();
         }
       }
-      event.sender.send(`pty:data:${id}`, data);
     }
+    if (sender && !sender.isDestroyed()) sender.send(`pty:data:${id}`, data);
   });
   ptyProcess.onExit(({ exitCode, signal }) => {
     log(`pty exited: ${id} exitCode=${exitCode} signal=${signal}`);
@@ -517,10 +531,9 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
     scrollback.delete(id);
     wsClients.delete(id);
     broadcastSessions();
-    if (!event.sender.isDestroyed()) event.sender.send(`pty:exit:${id}`);
+    if (sender && !sender.isDestroyed()) sender.send(`pty:exit:${id}`);
   });
 
-  // For resumed sessions, apply cached name + notify renderer of mapping
   if (resumeSessionId) {
     tabSessionIds.set(id, resumeSessionId);
     if (nameCache[resumeSessionId]) {
@@ -534,7 +547,10 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
       }
     }
   }
+}
 
+ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
+  spawnPty(id, resumeSessionId, event.sender);
   return id;
 });
 
