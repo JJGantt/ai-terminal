@@ -7,6 +7,18 @@ import './App.css';
 
 interface Tab { id: string; label: string; resumeSessionId?: string; }
 
+const MODELS = [
+  { label: 'Opus 4.6',   id: 'claude-opus-4-6' },
+  { label: 'Sonnet 4.6', id: 'claude-sonnet-4-6' },
+  { label: 'Haiku 4.5',  id: 'claude-haiku-4-5-20251001' },
+] as const;
+
+const THINKING = [
+  { label: 'Think',      cmd: 'think' },
+  { label: 'Think Hard', cmd: 'think hard' },
+  { label: 'Ultrathink', cmd: 'ultrathink' },
+] as const;
+
 let counter = 1;
 const makeTab = (): Tab => ({ id: crypto.randomUUID(), label: `Session ${counter++}` });
 
@@ -86,6 +98,8 @@ export default function App() {
   const [panelOpen, setPanelOpen] = useState(true);
   const panelOpenRef = useRef(panelOpen);
   panelOpenRef.current = panelOpen;
+  const [sessionsOpen, setSessionsOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -441,36 +455,63 @@ export default function App() {
       <div className="main-content" style={{ display: barMode ? 'none' : undefined }}>
         <div className={`left-panel ${panelOpen ? 'open' : 'collapsed'}`}>
           <div className="panel-content">
-            <div className="panel-header">
+            <div className="panel-header panel-section-toggle" onClick={() => setSessionsOpen(o => !o)}>
               <span className="panel-title">Sessions</span>
+              <span className="panel-caret">{sessionsOpen ? '▾' : '▸'}</span>
             </div>
-            <div className="session-list">
-              {sessions.map((s, i) => (
-                <div key={s.id} className={`session-item ${openSessions[s.id] ? 'open' : ''} ${panelNav && i === panelNavIdx ? 'nav-selected' : ''}`}
-                  onClick={() => resumeSession(s)}
-                  onContextMenu={e => { e.preventDefault(); window.sessions.contextMenu(s.id); }}>
-                  <div className="session-title">{s.title}</div>
-                  <div className="session-time">{timeAgo(s.mtime)}</div>
-                </div>
-              ))}
-              {dateGroups
-                .filter(d => d < new Date(Date.now() - 86400000).toISOString().slice(0, 10))
-                .slice(0, 30)
-                .map(date => (
-                  <div key={date}>
-                    <div className="date-header" onClick={() => toggleDate(date)}>
-                      <span>{expandedDates.has(date) ? '▾' : '▸'}</span>
-                      <span>{formatDateHeader(date)}</span>
-                    </div>
-                    {expandedDates.has(date) && dateSessions[date]?.map(s => (
-                      <div key={s.id} className={`session-item ${openSessions[s.id] ? 'open' : ''}`} onClick={() => resumeSession(s)}>
-                        <div className="session-title">{s.title}</div>
-                        <div className="session-time">{timeAgo(s.mtime)}</div>
-                      </div>
-                    ))}
+            {sessionsOpen && (
+              <div className="session-list">
+                {sessions.map((s, i) => (
+                  <div key={s.id} className={`session-item ${openSessions[s.id] ? 'open' : ''} ${panelNav && i === panelNavIdx ? 'nav-selected' : ''}`}
+                    onClick={() => resumeSession(s)}
+                    onContextMenu={e => { e.preventDefault(); window.sessions.contextMenu(s.id); }}>
+                    <div className="session-title">{s.title}</div>
+                    <div className="session-time">{timeAgo(s.mtime)}</div>
                   </div>
                 ))}
+                {dateGroups
+                  .filter(d => d < new Date(Date.now() - 86400000).toISOString().slice(0, 10))
+                  .slice(0, 30)
+                  .map(date => (
+                    <div key={date}>
+                      <div className="date-header" onClick={() => toggleDate(date)}>
+                        <span>{expandedDates.has(date) ? '▾' : '▸'}</span>
+                        <span>{formatDateHeader(date)}</span>
+                      </div>
+                      {expandedDates.has(date) && dateSessions[date]?.map(s => (
+                        <div key={s.id} className={`session-item ${openSessions[s.id] ? 'open' : ''}`} onClick={() => resumeSession(s)}>
+                          <div className="session-title">{s.title}</div>
+                          <div className="session-time">{timeAgo(s.mtime)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+              </div>
+            )}
+            <div className="panel-section-toggle settings-header" onClick={() => setSettingsOpen(o => !o)}>
+              <span className="panel-title">Settings</span>
+              <span className="panel-caret">{settingsOpen ? '▾' : '▸'}</span>
             </div>
+            {settingsOpen && (
+              <div className="panel-settings">
+                <div className="settings-group-label">Usage</div>
+                <button className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, '/usage\r')}>
+                  Check Usage
+                </button>
+                <div className="settings-group-label">Model</div>
+                {MODELS.map(m => (
+                  <button key={m.id} className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, `/model ${m.id}\r`)}>
+                    {m.label}
+                  </button>
+                ))}
+                <div className="settings-group-label">Thinking</div>
+                {THINKING.map(t => (
+                  <button key={t.cmd} className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, `${t.cmd} `)}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <button className="panel-close-rail" onClick={() => setPanelOpen(false)}>‹</button>
         </div>
