@@ -84,9 +84,7 @@ wsServer.on('connection', (ws: WebSocket) => {
         case 'input':
           ptySessions.get(msg.tabId)?.write(msg.data);
           break;
-        case 'resize':
-          ptySessions.get(msg.tabId)?.resize(msg.cols, msg.rows);
-          break;
+        // resize intentionally ignored from WS clients — PTY size is Mac-only
         case 'list':
           ws.send(JSON.stringify({ type: 'sessions', tabs: getTabList() }));
           break;
