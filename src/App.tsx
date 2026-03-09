@@ -5,7 +5,7 @@ import { CSS } from '@dnd-kit/utilities';
 import TerminalTab from './TerminalTab';
 import './App.css';
 
-interface Tab { id: string; label: string; resumeSessionId?: string; }
+interface Tab { id: string; label: string; resumeSessionId?: string; host?: 'pi'; }
 
 
 
@@ -20,6 +20,7 @@ function SortableTab({ tab, isActive, isRenaming, renameValue, renameInputRef, v
   onRenameChange: (v: string) => void; onCommitRename: () => void; onCancelRename: () => void;
   onClose: (e: React.MouseEvent) => void;
 }) {
+  const isPi = tab.host === 'pi';
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: tab.id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -30,7 +31,8 @@ function SortableTab({ tab, isActive, isRenaming, renameValue, renameInputRef, v
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}
       className={`tab ${isActive ? 'active' : ''}`}
       onClick={onSetActive} onContextMenu={onContextMenu}>
-      <button className="close-btn" onClick={onClose}>×</button>
+      {!isPi && <button className="close-btn" onClick={onClose}>×</button>}
+      {isPi && <span className="pi-badge">π</span>}
       {isRenaming ? (
         <input ref={renameInputRef} className="tab-rename-input" value={renameValue}
           onChange={e => onRenameChange(e.target.value)} onBlur={onCommitRename}
@@ -200,6 +202,8 @@ export default function App() {
     return () => document.removeEventListener('keydown', handler, true);
   }, [handleArrow]);
 
+  const [piConnected, setPiConnected] = useState(false);
+
   const [voiceState, setVoiceState] = useState<string>('idle');
   const [voiceTabId, setVoiceTabId] = useState<string | null>(null);
   const [dateGroups, setDateGroups] = useState<string[]>([]);
@@ -268,6 +272,50 @@ export default function App() {
     return window.voice.onStateChange((state, tabId) => {
       setVoiceState(state);
       setVoiceTabId(tabId);
+    });
+  }, []);
+
+  // Pi integration — sync Pi tabs into the main tab array
+  useEffect(() => {
+    return window.pi.onConnected(setPiConnected);
+  }, []);
+
+  useEffect(() => {
+    return window.pi.onTabs((piTabs) => {
+      setTabs(prev => {
+        // Remove Pi tabs that no longer exist
+        const piIds = new Set(piTabs.map(t => t.id));
+        let next = prev.filter(t => !t.host || piIds.has(t.id));
+        // Update existing Pi tabs and add new ones
+        for (const pt of piTabs) {
+          const idx = next.findIndex(t => t.id === pt.id);
+          if (idx >= 0) {
+            next = next.map(t => t.id === pt.id ? { ...t, label: pt.name } : t);
+          } else {
+            next = [...next, { id: pt.id, label: pt.name, host: 'pi' as const }];
+          }
+        }
+        return next;
+      });
+      // Update working status for Pi tabs
+      for (const pt of piTabs) {
+        setTabStatus(prev => {
+          if (pt.working && prev[pt.id] !== 'working') return { ...prev, [pt.id]: 'working' };
+          if (!pt.working && prev[pt.id] === 'working') {
+            const next = { ...prev };
+            delete next[pt.id];
+            return next;
+          }
+          return prev;
+        });
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.pi.onTabCreated((tabId) => {
+      // Auto-select new Pi tab
+      setActiveId(tabId);
     });
   }, []);
 
@@ -441,6 +489,8 @@ export default function App() {
           </SortableContext>
         </DndContext>
         <button className="new-tab-btn" onClick={addTab} title="New session">+</button>
+        <button className="new-tab-btn pi-new-tab" onClick={() => window.pi.newTab()} title="New Pi session"
+          style={{ opacity: piConnected ? 1 : 0.3, pointerEvents: piConnected ? 'auto' : 'none' }}>π+</button>
       </div>
       <div className="main-content" style={{ display: barMode ? 'none' : undefined }}>
         <div className={`left-panel ${panelOpen ? 'open' : 'collapsed'}`}>

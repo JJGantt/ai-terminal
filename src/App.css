@@ -100,6 +100,14 @@
 }
 .new-tab-btn:hover { color: #fff; }
 
+.pi-badge {
+  font-size: 9px;
+  font-weight: 600;
+  color: #888;
+  padding: 0 2px;
+  line-height: 1;
+}
+
 .tab-spinner {
   width: 10px;
   height: 10px;

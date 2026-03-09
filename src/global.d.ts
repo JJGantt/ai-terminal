@@ -45,6 +45,13 @@ interface Window {
     onCloseTab: (cb: () => void) => () => void;
     onEnter: (cb: () => void) => () => void;
   };
+  pi: {
+    onTabs: (cb: (tabs: { id: string; name: string; working: boolean }[]) => void) => () => void;
+    onConnected: (cb: (connected: boolean) => void) => () => void;
+    onTabCreated: (cb: (tabId: string) => void) => () => void;
+    newTab: () => void;
+    resumeTab: (sessionId: string) => void;
+  };
   files: {
     getPath: (file: File) => string;
   };

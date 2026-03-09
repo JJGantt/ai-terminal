@@ -88,6 +88,26 @@ contextBridge.exposeInMainWorld('app', {
   },
 });
 
+contextBridge.exposeInMainWorld('pi', {
+  onTabs: (cb: (tabs: { id: string; name: string; working: boolean }[]) => void) => {
+    const handler = (_: unknown, tabs: { id: string; name: string; working: boolean }[]) => cb(tabs);
+    ipcRenderer.on('pi:tabs', handler);
+    return () => ipcRenderer.removeListener('pi:tabs', handler);
+  },
+  onConnected: (cb: (connected: boolean) => void) => {
+    const handler = (_: unknown, connected: boolean) => cb(connected);
+    ipcRenderer.on('pi:connected', handler);
+    return () => ipcRenderer.removeListener('pi:connected', handler);
+  },
+  onTabCreated: (cb: (tabId: string) => void) => {
+    const handler = (_: unknown, tabId: string) => cb(tabId);
+    ipcRenderer.on('pi:tab-created', handler);
+    return () => ipcRenderer.removeListener('pi:tab-created', handler);
+  },
+  newTab: () => ipcRenderer.send('pi:new-tab'),
+  resumeTab: (sessionId: string) => ipcRenderer.send('pi:resume-tab', sessionId),
+});
+
 contextBridge.exposeInMainWorld('files', {
   getPath: (file: File) => webUtils.getPathForFile(file),
 });

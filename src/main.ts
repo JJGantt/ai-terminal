@@ -139,6 +139,87 @@ ipcMain.on('tab:active', (_e, id: string) => {
   log('active tab:', id);
 });
 
+// ── Pi WebSocket client ──────────────────────────────────────────────────────
+const PI_HOSTS = ['raspberrypi.local', '100.104.197.58'];
+let piWs: WebSocket | null = null;
+let piConnected = false;
+let piHostIndex = 0;
+
+function connectToPi() {
+  const host = PI_HOSTS[piHostIndex];
+  const url = `ws://${host}:27183`;
+  log(`pi: connecting to ${url}`);
+
+  const ws = new WebSocket(url);
+  ws.on('open', () => {
+    log('pi: connected');
+    piWs = ws;
+    piConnected = true;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('pi:connected', true);
+    }
+  });
+
+  ws.on('message', (raw: Buffer) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      switch (msg.type) {
+        case 'sessions': {
+          const tabs = (msg.tabs || []).map((t: { id: string; name: string; working: boolean }) => ({
+            id: t.id, name: t.name, working: t.working,
+          }));
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('pi:tabs', tabs);
+          }
+          break;
+        }
+        case 'scrollback':
+        case 'data': {
+          if (mainWindow && !mainWindow.isDestroyed() && msg.tabId) {
+            mainWindow.webContents.send(`pty:data:${msg.tabId}`, msg.data);
+          }
+          break;
+        }
+        case 'tab_created': {
+          if (mainWindow && !mainWindow.isDestroyed() && msg.tabId) {
+            mainWindow.webContents.send('pi:tab-created', msg.tabId);
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      log('pi: message error:', (e as Error).message);
+    }
+  });
+
+  ws.on('close', () => {
+    log('pi: disconnected');
+    piWs = null;
+    piConnected = false;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('pi:connected', false);
+      mainWindow.webContents.send('pi:tabs', []);
+    }
+    setTimeout(() => {
+      piHostIndex = (piHostIndex + 1) % PI_HOSTS.length;
+      connectToPi();
+    }, 3000);
+  });
+
+  ws.on('error', (err) => {
+    log('pi: error:', err.message);
+  });
+}
+
+function piSend(msg: Record<string, unknown>) {
+  if (piWs?.readyState === WebSocket.OPEN) {
+    piWs.send(JSON.stringify(msg));
+  }
+}
+
+ipcMain.on('pi:new-tab', () => { piSend({ type: 'new_tab' }); });
+ipcMain.on('pi:resume-tab', (_e, sessionId: string) => { piSend({ type: 'resume_tab', sessionId }); });
+
 // IPC server for tab rename and active-tab queries
 const IPC_PORT = 27182;
 const ipcServer = http.createServer((req, res) => {
@@ -550,6 +631,11 @@ function spawnPty(id: string, resumeSessionId: string | undefined, sender: WebCo
 }
 
 ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
+  if (id.startsWith('pi-')) {
+    // Pi tab — subscribe via WS client instead of spawning local PTY
+    piSend({ type: 'subscribe', tabId: id });
+    return id;
+  }
   spawnPty(id, resumeSessionId, event.sender);
   return id;
 });
@@ -814,12 +900,17 @@ keyListener.addListener((e: { name: string; state: string }, down: Record<string
   }
 });
 
-ipcMain.on('pty:write', (_e, id: string, data: string) => ptySessions.get(id)?.write(data));
+ipcMain.on('pty:write', (_e, id: string, data: string) => {
+  if (id.startsWith('pi-')) { piSend({ type: 'input', tabId: id, data }); }
+  else { ptySessions.get(id)?.write(data); }
+});
 ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => {
-  ptySessions.get(id)?.resize(cols, rows);
+  if (id.startsWith('pi-')) { piSend({ type: 'resize', tabId: id, cols, rows }); }
+  else { ptySessions.get(id)?.resize(cols, rows); }
 });
 
 ipcMain.on('pty:kill', (_e, id: string) => {
+  if (id.startsWith('pi-')) return; // Pi tabs are not killed from Mac
   log('pty:kill called for', id);
   ptySessions.get(id)?.kill();
   ptySessions.delete(id);
@@ -860,6 +951,8 @@ app.on('ready', () => {
   mainWindow.webContents.on('did-finish-load', () => log('renderer loaded'));
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => log('FAILED', url, code, desc));
   mainWindow.webContents.on('console-message', (_e, _level, msg) => log('[renderer]', msg));
+
+  connectToPi();
 
   voiceControl = initVoice({
     ptySessions,
