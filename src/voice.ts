@@ -77,9 +77,12 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
 
   function grabSelection() {
     try {
+      log('voice: grabSelection path:', GET_SELECTION);
       const text = execFileSync(GET_SELECTION, { timeout: 1000, encoding: 'utf-8' }).trim();
+      log('voice: grabSelection result:', text ? text.slice(0, 80) : '(empty)');
       return text || null;
-    } catch {
+    } catch (err) {
+      log('voice: grabSelection error:', (err as Error).message);
       return null;
     }
   }
