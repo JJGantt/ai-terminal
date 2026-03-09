@@ -66,6 +66,8 @@ const wsServer = new WebSocketServer({ port: WS_PORT, host: '0.0.0.0' });
 wsServer.on('listening', () => log(`WS server on :${WS_PORT}`));
 wsServer.on('connection', (ws: WebSocket) => {
   let currentTab: string | null = null;
+  let clientCols = 0;
+  let clientRows = 0;
   ws.send(JSON.stringify({ type: 'sessions', tabs: getTabList() }));
 
   ws.on('message', (raw: Buffer) => {
@@ -79,12 +81,18 @@ wsServer.on('connection', (ws: WebSocket) => {
           wsClients.get(currentTab)!.add(ws);
           const buf = scrollback.get(currentTab);
           if (buf) ws.send(JSON.stringify({ type: 'scrollback', tabId: currentTab, data: buf }));
+          // Auto-resize the subscribed tab to this client's terminal size
+          if (clientCols > 0 && clientRows > 0) {
+            ptySessions.get(currentTab)?.resize(clientCols, clientRows);
+          }
           break;
         }
         case 'input':
           ptySessions.get(msg.tabId)?.write(msg.data);
           break;
         case 'resize':
+          clientCols = msg.cols;
+          clientRows = msg.rows;
           ptySessions.get(msg.tabId)?.resize(msg.cols, msg.rows);
           break;
         case 'list':
