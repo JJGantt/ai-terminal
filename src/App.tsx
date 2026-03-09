@@ -7,11 +7,6 @@ import './App.css';
 
 interface Tab { id: string; label: string; resumeSessionId?: string; }
 
-const MODELS = [
-  { label: 'Opus 4.6',   id: 'claude-opus-4-6' },
-  { label: 'Sonnet 4.6', id: 'claude-sonnet-4-6' },
-  { label: 'Haiku 4.5',  id: 'claude-haiku-4-5-20251001' },
-] as const;
 
 const THINKING = [
   { label: 'Think',      cmd: 'think' },
@@ -495,15 +490,13 @@ export default function App() {
             {settingsOpen && (
               <div className="panel-settings">
                 <div className="settings-group-label">Usage</div>
-                <button className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, '/usage\r')}>
+                <button className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, '\x1b/usage\r')}>
                   Check Usage
                 </button>
                 <div className="settings-group-label">Model</div>
-                {MODELS.map(m => (
-                  <button key={m.id} className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, `/model ${m.id}\r`)}>
-                    {m.label}
-                  </button>
-                ))}
+                <button className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, '\x1b/model\r')}>
+                  Choose Model…
+                </button>
                 <div className="settings-group-label">Thinking</div>
                 {THINKING.map(t => (
                   <button key={t.cmd} className="settings-cmd-btn" onClick={() => window.pty.write(activeIdRef.current!, `${t.cmd} `)}>
