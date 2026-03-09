@@ -144,6 +144,17 @@ wsServer.on('connection', (ws: WebSocket) => {
           ws.send(JSON.stringify({ type: 'history', sessions }));
           break;
         }
+        case 'regenerate_name': {
+          const { sessionId } = msg;
+          if (!sessionId) break;
+          const jsonlPath = findSessionJSONL(sessionId);
+          if (!jsonlPath) { log('regenerate: no JSONL found for', sessionId); break; }
+          const pairs = readConversationPairs(jsonlPath, 5);
+          if (!pairs.length) break;
+          const liveTabId = [...tabSessionIds.entries()].find(([, sid]) => sid === sessionId)?.[0];
+          generateName(sessionId, liveTabId || `regen-${sessionId}`, pairs);
+          break;
+        }
       }
     } catch (e) {
       log('ws error:', (e as Error).message);
