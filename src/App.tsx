@@ -31,7 +31,7 @@ function SortableTab({ tab, isActive, isRenaming, renameValue, renameInputRef, v
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}
       className={`tab ${isActive ? 'active' : ''}`}
       onClick={onSetActive} onContextMenu={onContextMenu}>
-      {!isPi && <button className="close-btn" onClick={onClose}>×</button>}
+      <button className="close-btn" onClick={onClose}>×</button>
       {isPi && <span className="pi-badge">π</span>}
       {isRenaming ? (
         <input ref={renameInputRef} className="tab-rename-input" value={renameValue}

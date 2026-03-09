@@ -924,7 +924,7 @@ ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => {
 });
 
 ipcMain.on('pty:kill', (_e, id: string) => {
-  if (id.startsWith('pi-')) return; // Pi tabs are not killed from Mac
+  if (id.startsWith('pi-')) { piSend({ type: 'kill_tab', tabId: id }); return; }
   log('pty:kill called for', id);
   ptySessions.get(id)?.kill();
   ptySessions.delete(id);
