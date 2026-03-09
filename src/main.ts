@@ -132,7 +132,7 @@ wsServer.on('connection', (ws: WebSocket) => {
           const sessions = getHistorySessions(Date.now() - 7 * 86400000)
             .sort((a, b) => b.mtime - a.mtime)
             .slice(0, 50)
-            .map(s => ({ id: s.id, title: nameCache[s.id] || s.title, timestamp: s.timestamp }));
+            .map(s => ({ id: s.id, title: nameCache[s.id] || s.title, timestamp: s.timestamp, source: s.source }));
           ws.send(JSON.stringify({ type: 'history', sessions }));
           break;
         }
