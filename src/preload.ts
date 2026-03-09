@@ -45,10 +45,46 @@ contextBridge.exposeInMainWorld('pty', {
     ipcRenderer.on('tab:session-mapped', handler);
     return () => ipcRenderer.removeListener('tab:session-mapped', handler);
   },
-  onPoppedOut: (cb: (tabId: string) => void) => {
+  onBell: (cb: (tabId: string) => void) => {
     const handler = (_: unknown, tabId: string) => cb(tabId);
-    ipcRenderer.on('tab:popped-out', handler);
-    return () => ipcRenderer.removeListener('tab:popped-out', handler);
+    ipcRenderer.on('tab:bell', handler);
+    return () => ipcRenderer.removeListener('tab:bell', handler);
+  },
+  onWorking: (cb: (tabId: string) => void) => {
+    const handler = (_: unknown, tabId: string) => cb(tabId);
+    ipcRenderer.on('tab:working', handler);
+    return () => ipcRenderer.removeListener('tab:working', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld('app', {
+  setBarMode: (enabled: boolean) => ipcRenderer.send('app:bar-mode', enabled),
+  setPanelNav: (active: boolean) => ipcRenderer.send('app:panel-nav', active),
+  toggleBarLock: () => ipcRenderer.send('app:toggle-bar-lock'),
+  onArrow: (cb: (direction: string) => void) => {
+    const handler = (_: unknown, direction: string) => cb(direction);
+    ipcRenderer.on('app:arrow', handler);
+    return () => ipcRenderer.removeListener('app:arrow', handler);
+  },
+  onBarModeChanged: (cb: (enabled: boolean) => void) => {
+    const handler = (_: unknown, enabled: boolean) => cb(enabled);
+    ipcRenderer.on('app:bar-mode-changed', handler);
+    return () => ipcRenderer.removeListener('app:bar-mode-changed', handler);
+  },
+  onBarLockChanged: (cb: (locked: boolean) => void) => {
+    const handler = (_: unknown, locked: boolean) => cb(locked);
+    ipcRenderer.on('app:bar-lock', handler);
+    return () => ipcRenderer.removeListener('app:bar-lock', handler);
+  },
+  onCloseTab: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('app:close-tab', handler);
+    return () => ipcRenderer.removeListener('app:close-tab', handler);
+  },
+  onEnter: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('app:enter', handler);
+    return () => ipcRenderer.removeListener('app:enter', handler);
   },
 });
 

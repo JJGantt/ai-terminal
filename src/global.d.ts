@@ -32,7 +32,18 @@ interface Window {
     setName: (id: string, name: string) => void;
     onStartRename: (cb: (tabId: string) => void) => () => void;
     onSessionMapped: (cb: (tabId: string, sessionId: string) => void) => () => void;
-    onPoppedOut: (cb: (tabId: string) => void) => () => void;
+    onBell: (cb: (tabId: string) => void) => () => void;
+    onWorking: (cb: (tabId: string) => void) => () => void;
+  };
+  app: {
+    setBarMode: (enabled: boolean) => void;
+    setPanelNav: (active: boolean) => void;
+    toggleBarLock: () => void;
+    onArrow: (cb: (direction: string) => void) => () => void;
+    onBarModeChanged: (cb: (enabled: boolean) => void) => () => void;
+    onBarLockChanged: (cb: (locked: boolean) => void) => () => void;
+    onCloseTab: (cb: () => void) => () => void;
+    onEnter: (cb: () => void) => () => void;
   };
   files: {
     getPath: (file: File) => string;

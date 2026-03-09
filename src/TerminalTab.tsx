@@ -3,12 +3,14 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-interface Props { id: string; active: boolean; resumeSessionId?: string; }
+interface Props { id: string; active: boolean; resumeSessionId?: string; panelNav?: boolean; }
 
-export default function TerminalTab({ id, active, resumeSessionId }: Props) {
+export default function TerminalTab({ id, active, resumeSessionId, panelNav }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const panelNavRef = useRef(panelNav);
+  panelNavRef.current = panelNav;
 
   useEffect(() => {
     console.log('[TerminalTab] mounting', id);
@@ -18,6 +20,7 @@ export default function TerminalTab({ id, active, resumeSessionId }: Props) {
       theme: { background: '#1e1e1e' },
       cursorBlink: true,
       scrollSensitivity: 3,
+      scrollback: 5000,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -25,11 +28,12 @@ export default function TerminalTab({ id, active, resumeSessionId }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Bare left/right arrows → tab navigation (handled by App.tsx document listener)
-    // Option+arrows → pass through to terminal as normal cursor movement
     term.attachCustomKeyEventHandler((e) => {
-      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey) {
-        return false; // don't let xterm process it
+      if (!e.altKey && !e.ctrlKey && !e.metaKey) {
+        // Bare left/right → always blocked (tab navigation in App.tsx)
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') return false;
+        // Bare up/down → blocked during panel nav
+        if (panelNavRef.current && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) return false;
       }
       return true;
     });
@@ -43,24 +47,21 @@ export default function TerminalTab({ id, active, resumeSessionId }: Props) {
     });
     ro.observe(el);
 
+    let disposed = false;
     let cleanupData: (() => void) | null = null;
 
     window.pty.create(id, resumeSessionId).then(() => {
+      if (disposed) {
+        window.pty.kill(id);
+        return;
+      }
       console.log('[TerminalTab] pty created', id);
-      let claudeStarted = false;
-      cleanupData = window.pty.onData(id, data => {
-        if (!claudeStarted && data.includes('Claude Code')) {
-          claudeStarted = true;
-          term.reset();
-        }
-        term.write(data);
-      });
+      cleanupData = window.pty.onData(id, data => term.write(data));
       term.onData(data => window.pty.write(id, data));
       term.onResize(({ cols, rows }) => {
         console.log(`[TerminalTab] onResize fired: ${cols}x${rows}`);
         window.pty.resize(id, cols, rows);
       });
-      // Tell tmux the real terminal size
       fit.fit();
       window.pty.resize(id, term.cols, term.rows);
       console.log(`[TerminalTab] fit after PTY: cols=${term.cols} rows=${term.rows}`);
@@ -71,6 +72,7 @@ export default function TerminalTab({ id, active, resumeSessionId }: Props) {
     }).catch(err => console.error('[TerminalTab] pty create failed', err));
 
     return () => {
+      disposed = true;
       ro.disconnect();
       cleanupData?.();
       window.pty.kill(id);

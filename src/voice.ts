@@ -1,4 +1,4 @@
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +9,7 @@ import { systemPreferences, BrowserWindow, ipcMain } from 'electron';
 type State = 'idle' | 'recording' | 'transcribing';
 
 interface VoiceDeps {
-  tmuxSessions: Map<string, string>;
+  ptySessions: Map<string, { write: (data: string) => void }>;
   getActiveTabId: () => string | null;
   getMainWindow: () => BrowserWindow | null;
   log: (...args: unknown[]) => void;
@@ -18,12 +18,11 @@ interface VoiceDeps {
 const SOX = '/opt/homebrew/bin/sox';
 const WHISPER = path.join(os.homedir(), 'whisper.cpp/build/bin/whisper-cli');
 const WHISPER_MODEL = path.join(os.homedir(), 'whisper.cpp/models/ggml-base.en.bin');
-const TMUX = '/opt/homebrew/bin/tmux';
 const SUBS_PATH = path.join(os.homedir(), 'pi-data/voice_subs.json');
 const OPENAI_KEY_FILE = path.join(os.homedir(), '.config/openai-api-key');
+const GET_SELECTION = path.join(__dirname, '../../native/get-selection');
 const SOUNDS = '/System/Library/Sounds';
 const WAV_PATH = '/tmp/ai-terminal-voice.wav';
-const WATCHDOG_MS = 60_000;
 const ADAPTIVE_THRESHOLD_S = 15;
 
 function playSound(name: string) {
@@ -50,15 +49,15 @@ function applySubs(text: string): string {
 }
 
 export function initVoice(deps: VoiceDeps): { stop: () => void } {
-  const { tmuxSessions, getActiveTabId, getMainWindow, log } = deps;
+  const { ptySessions, getActiveTabId, getMainWindow, log } = deps;
 
   let state: State = 'idle';
   let soxProc: ChildProcess | null = null;
   let sendEnter = false;
-  let watchdog: ReturnType<typeof setTimeout> | null = null;
   let recordingStartedAt = 0;
   let recordingTabId: string | null = null;
   let rightOptionHeld = false;
+  let capturedSelection: string | null = null;
 
   // Check permissions
   const trusted = systemPreferences.isTrustedAccessibilityClient(true);
@@ -76,25 +75,26 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     log('voice state:', next, 'tab:', recordingTabId);
   }
 
-  function resetWatchdog() {
-    if (watchdog) clearTimeout(watchdog);
-    watchdog = setTimeout(() => {
-      if (state !== 'idle') {
-        log('voice: watchdog triggered, resetting from', state);
-        cancelRecording();
-      }
-    }, WATCHDOG_MS);
+  function grabSelection() {
+    try {
+      const text = execFileSync(GET_SELECTION, { timeout: 1000, encoding: 'utf-8' }).trim();
+      return text || null;
+    } catch {
+      return null;
+    }
   }
 
   function startRecording() {
     if (state !== 'idle') return;
+
+    capturedSelection = grabSelection();
+    if (capturedSelection) log('voice: captured selection:', capturedSelection.slice(0, 100));
 
     sendEnter = true;
     recordingStartedAt = Date.now();
     recordingTabId = getActiveTabId();
     setState('recording');
     playSound('Glass');
-    resetWatchdog();
 
     // Clean up any old wav
     try { fs.unlinkSync(WAV_PATH); } catch { /* ignore */ }
@@ -110,7 +110,7 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
   }
 
   function onTranscribed(text: string | null) {
-    if (watchdog) clearTimeout(watchdog);
+
     if (!text) {
       log('voice: empty transcription');
       recordingTabId = null;
@@ -178,7 +178,6 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     playSound('Purr');
 
     setState('transcribing');
-    resetWatchdog();
 
     const durationS = (Date.now() - recordingStartedAt) / 1000;
     const useAPI = durationS >= ADAPTIVE_THRESHOLD_S;
@@ -205,7 +204,8 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
       soxProc.kill('SIGTERM');
       soxProc = null;
     }
-    if (watchdog) clearTimeout(watchdog);
+
+    capturedSelection = null;
     recordingTabId = null;
     setState('idle');
     log('voice: cancelled');
@@ -214,22 +214,24 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
   function deliverText(text: string, withEnter: boolean) {
     const tabId = recordingTabId;
     if (!tabId) { log('voice: no recording tab'); return; }
-    const sessionName = tmuxSessions.get(tabId);
-    if (!sessionName) { log('voice: no tmux session for tab', tabId); return; }
+    const ptyProcess = ptySessions.get(tabId);
+    if (!ptyProcess) { log('voice: no pty for tab', tabId); return; }
 
-    const safe = text.replace(/'/g, '');
-    execFile(TMUX, ['send-keys', '-t', sessionName, '-l', safe], (err) => {
-      if (err) { log('voice: send-keys text failed', err.message); return; }
-      log('voice: text sent to', sessionName);
-      if (withEnter) {
-        setTimeout(() => {
-          execFile(TMUX, ['send-keys', '-t', sessionName, 'Enter'], (err2) => {
-            if (err2) log('voice: send-keys Enter failed', err2.message);
-            else log('voice: Enter sent to', sessionName);
-          });
-        }, 100);
-      }
-    });
+    let output = '';
+    if (capturedSelection) {
+      const quoted = capturedSelection.split('\n').map(l => `> ${l}`).join('\n');
+      output = `[Highlighted text:]\n${quoted}\n\n${text}`;
+      capturedSelection = null;
+    } else {
+      output = text;
+    }
+
+    ptyProcess.write(output);
+    log('voice: text sent to tab', tabId);
+    if (withEnter) {
+      ptyProcess.write('\r');
+      log('voice: Enter sent to tab', tabId);
+    }
   }
 
   // Right Option + Right Shift → new tab + record
@@ -284,7 +286,7 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     stop() {
       uIOhook.stop();
       if (soxProc) { soxProc.kill('SIGTERM'); soxProc = null; }
-      if (watchdog) clearTimeout(watchdog);
+  
       log('voice: stopped');
     },
   };

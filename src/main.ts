@@ -6,6 +6,7 @@ import http from 'node:http';
 import { execSync, execFile } from 'node:child_process';
 import started from 'electron-squirrel-startup';
 import pty from 'node-pty';
+import { WebSocketServer, WebSocket } from 'ws';
 import { initVoice } from './voice';
 import { loadConfig } from './config';
 
@@ -19,11 +20,86 @@ const log = (...args: unknown[]) => {
 };
 log('main process starting');
 
-const TMUX = '/opt/homebrew/bin/tmux';
-const tmuxSessions = new Map<string, string>(); // tab id → tmux session name
 const ptySessions = new Map<string, ReturnType<typeof pty.spawn>>();
 let activeTabId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
+
+// Remote client state (phone companion app)
+const WS_PORT = 27183;
+const MAX_SCROLLBACK = 100 * 1024; // 100KB per session
+const scrollback = new Map<string, string>(); // tabId → raw PTY buffer
+const wsClients = new Map<string, Set<WebSocket>>(); // tabId → subscribers
+const tabNames = new Map<string, string>(); // tabId → display name
+const tabWorking = new Map<string, boolean>(); // tabId → working state
+
+function getTabList() {
+  return [...ptySessions.keys()].map(id => ({
+    id,
+    name: tabNames.get(id) || 'New Session',
+    working: tabWorking.get(id) || false,
+  }));
+}
+
+function broadcastSessions() {
+  const msg = JSON.stringify({ type: 'sessions', tabs: getTabList() });
+  wsServer.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}
+
+function appendScrollback(tabId: string, data: string) {
+  const current = scrollback.get(tabId) || '';
+  const next = current + data;
+  scrollback.set(tabId, next.length > MAX_SCROLLBACK ? next.slice(-MAX_SCROLLBACK) : next);
+}
+
+function broadcastData(tabId: string, data: string) {
+  const subs = wsClients.get(tabId);
+  if (!subs?.size) return;
+  const msg = JSON.stringify({ type: 'data', tabId, data });
+  for (const ws of subs) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
+
+const wsServer = new WebSocketServer({ port: WS_PORT, host: '0.0.0.0' });
+wsServer.on('listening', () => log(`WS server on :${WS_PORT}`));
+wsServer.on('connection', (ws: WebSocket) => {
+  let currentTab: string | null = null;
+  ws.send(JSON.stringify({ type: 'sessions', tabs: getTabList() }));
+
+  ws.on('message', (raw: Buffer) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      switch (msg.type) {
+        case 'subscribe': {
+          if (currentTab) wsClients.get(currentTab)?.delete(ws);
+          currentTab = msg.tabId;
+          if (!wsClients.has(currentTab)) wsClients.set(currentTab, new Set());
+          wsClients.get(currentTab)!.add(ws);
+          const buf = scrollback.get(currentTab);
+          if (buf) ws.send(JSON.stringify({ type: 'scrollback', tabId: currentTab, data: buf }));
+          break;
+        }
+        case 'input':
+          ptySessions.get(msg.tabId)?.write(msg.data);
+          break;
+        case 'resize':
+          ptySessions.get(msg.tabId)?.resize(msg.cols, msg.rows);
+          break;
+        case 'list':
+          ws.send(JSON.stringify({ type: 'sessions', tabs: getTabList() }));
+          break;
+      }
+    } catch (e) {
+      log('ws error:', (e as Error).message);
+    }
+  });
+
+  ws.on('close', () => {
+    if (currentTab) wsClients.get(currentTab)?.delete(ws);
+  });
+});
 
 ipcMain.on('tab:active', (_e, id: string) => {
   activeTabId = id;
@@ -41,6 +117,8 @@ const ipcServer = http.createServer((req, res) => {
       try {
         const { tabId, title } = JSON.parse(body);
         log('rename tab:', tabId, '→', title);
+        tabNames.set(tabId, title);
+        broadcastSessions();
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('tab:rename', tabId, title);
         }
@@ -322,33 +400,58 @@ ipcMain.on('session:context-menu', (_e, sessionId: string) => {
   menu.popup();
 });
 
+// Convert project key back to a filesystem path.
+// Keys use - as separator: -Users-jaredgantt-Life-Job → /Users/jaredgantt/Life/Job
+// Ambiguity (hyphens in dir names) resolved by greedy filesystem matching.
+function projectKeyToPath(key: string): string | null {
+  const segments = key.replace(/^-/, '').split('-');
+  let current = '/';
+  let i = 0;
+  while (i < segments.length) {
+    let matched = false;
+    // Try longest possible chunk first (handles hyphens in dir names)
+    for (let end = segments.length; end > i; end--) {
+      const candidate = segments.slice(i, end).join('-');
+      const tryPath = path.join(current, candidate);
+      try {
+        if (fs.statSync(tryPath).isDirectory()) {
+          current = tryPath;
+          i = end;
+          matched = true;
+          break;
+        }
+      } catch { /* doesn't exist */ }
+    }
+    if (!matched) return null;
+  }
+  return current;
+}
+
+function resolveSessionCwd(sessionId: string): string {
+  const defaultCwd = path.join(os.homedir(), 'workspace');
+  try {
+    const projectDirs = fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })
+      .filter(d => d.isDirectory());
+    for (const dir of projectDirs) {
+      if (fs.existsSync(path.join(PROJECTS_ROOT, dir.name, `${sessionId}.jsonl`))) {
+        const resolved = projectKeyToPath(dir.name);
+        if (resolved) return resolved;
+      }
+    }
+  } catch { /* fallback */ }
+  return defaultCwd;
+}
+
 ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
-  const sessionName = `ai-tab-${id.slice(0, 8)}`;
-  log('creating tmux session:', sessionName, resumeSessionId ? `(resuming ${resumeSessionId})` : '');
+  log('creating pty:', id, resumeSessionId ? `(resuming ${resumeSessionId})` : '');
 
   const env = getCleanEnv();
+  const cwd = resumeSessionId ? resolveSessionCwd(resumeSessionId) : path.join(os.homedir(), 'workspace');
+  log('pty cwd:', cwd);
+  const args = ['--dangerously-skip-permissions'];
+  if (resumeSessionId) args.push('--resume', resumeSessionId);
 
-  // Create a detached tmux session running claude
-  const cwd = path.join(os.homedir(), 'workspace');
-  const claudeCmd = resumeSessionId
-    ? `claude --dangerously-skip-permissions --resume '${resumeSessionId}'`
-    : 'claude --dangerously-skip-permissions';
-  try {
-    execSync(
-      `${TMUX} new-session -d -s '${sessionName}' -x 80 -y 24 -c '${cwd}' '${claudeCmd}'`,
-      { env },
-    );
-    execSync(`${TMUX} set-option -t '${sessionName}' status off`, { env });
-    execSync(`${TMUX} set-option -t '${sessionName}' mouse off`, { env });
-  } catch (err) {
-    log('tmux new-session failed:', (err as Error).message);
-    throw err;
-  }
-
-  tmuxSessions.set(id, sessionName);
-
-  // Attach to the tmux session via PTY so xterm.js can render it
-  const ptyProcess = pty.spawn(TMUX, ['attach-session', '-t', sessionName], {
+  const ptyProcess = pty.spawn('claude', args, {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
@@ -357,10 +460,51 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
   });
 
   ptySessions.set(id, ptyProcess);
-  ptyProcess.onData((data) => { if (!event.sender.isDestroyed()) event.sender.send(`pty:data:${id}`, data); });
+  tabNames.set(id, 'New Session');
+  tabWorking.set(id, false);
+  broadcastSessions();
+
+  let hasBeenIdle = false; // Only track working/done after first idle (startup complete)
+  let wasWorking = false;
+  ptyProcess.onData((data) => {
+    appendScrollback(id, data);
+    broadcastData(id, data);
+    if (!event.sender.isDestroyed()) {
+      // Detect Claude status from OSC title sequences: ESC]0;<title>BEL
+      // ✳ = idle/done, ⠂/⠐ = working (spinner frames)
+      const titleMatch = data.match(/\x1b\]0;(.*?)\x07/);
+      if (titleMatch) {
+        const title = titleMatch[1];
+        if (title.startsWith('\u2733')) {
+          // ✳ — Claude is idle/done
+          if (wasWorking) {
+            event.sender.send('tab:bell', id);
+            wasWorking = false;
+            tabWorking.set(id, false);
+            broadcastSessions();
+          }
+          hasBeenIdle = true;
+        } else if (hasBeenIdle) {
+          // Spinner after idle — Claude is working on user input
+          if (!wasWorking) {
+            event.sender.send('tab:working', id);
+            wasWorking = true;
+            tabWorking.set(id, true);
+            broadcastSessions();
+          }
+        }
+      }
+      event.sender.send(`pty:data:${id}`, data);
+    }
+  });
   ptyProcess.onExit(({ exitCode, signal }) => {
     log(`pty exited: ${id} exitCode=${exitCode} signal=${signal}`);
     ptySessions.delete(id);
+    tabNames.delete(id);
+    tabWorking.delete(id);
+    scrollback.delete(id);
+    wsClients.delete(id);
+    broadcastSessions();
     if (!event.sender.isDestroyed()) event.sender.send(`pty:exit:${id}`);
   });
 
@@ -374,8 +518,6 @@ ipcMain.handle('pty:create', (event, id: string, resumeSessionId?: string) => {
       }
     }
   }
-  // For new sessions, the Stop hook will POST /session-id after first exchange,
-  // which triggers naming automatically.
 
   return id;
 });
@@ -484,8 +626,6 @@ function generateName(sessionId: string, tabId: string, pairs: { user: string; a
 ipcMain.on('tab:context-menu', (_e, tabId: string) => {
   const sessionId = tabSessionIds.get(tabId);
 
-  const sessionName = tmuxSessions.get(tabId);
-
   const menu = Menu.buildFromTemplate([
     {
       label: 'Rename...',
@@ -511,31 +651,6 @@ ipcMain.on('tab:context-menu', (_e, tabId: string) => {
         }
       },
     },
-    { type: 'separator' },
-    {
-      label: 'Open in Terminal',
-      enabled: !!sessionName,
-      click: () => {
-        if (!sessionName) return;
-        log('pop out to iTerm:', sessionName);
-        // Detach our PTY so iTerm can attach
-        ptySessions.get(tabId)?.kill();
-        ptySessions.delete(tabId);
-        // Open iTerm attached to the tmux session
-        const script = `tell application "iTerm"
-          activate
-          create window with default profile command "${TMUX} attach-session -t '${sessionName}'"
-        end tell`;
-        execFile('osascript', ['-e', script], (err) => {
-          if (err) log('pop out failed:', err.message);
-        });
-        // Remove tab from app
-        tmuxSessions.delete(tabId);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('tab:popped-out', tabId);
-        }
-      },
-    },
   ]);
 
   menu.popup();
@@ -549,44 +664,149 @@ ipcMain.on('tab:set-name', (_e, tabId: string, name: string) => {
     saveNameCache();
     log('manual rename:', sessionId, '→', name.trim());
   }
+  tabNames.set(tabId, name.trim());
+  broadcastSessions();
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('tab:rename', tabId, name.trim());
+  }
+});
+
+let savedHeight: number | null = null;
+let barModeActive = false;
+const TAB_BAR_HEIGHT = 36;
+
+function setBarMode(enabled: boolean) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (barModeActive === enabled) return;
+  barModeActive = enabled;
+  const bounds = mainWindow.getBounds();
+  if (enabled) {
+    savedHeight = bounds.height;
+    mainWindow.setBounds({ ...bounds, height: TAB_BAR_HEIGHT });
+  } else if (savedHeight) {
+    mainWindow.setBounds({ ...bounds, height: savedHeight });
+    savedHeight = null;
+  }
+  mainWindow.webContents.send('app:bar-mode-changed', enabled);
+  log('bar mode:', enabled);
+}
+
+ipcMain.on('app:bar-mode', (_e, enabled: boolean) => setBarMode(enabled));
+
+// Bar lock — global arrow key capture using keyspy (CGEventTap)
+let barLocked = false;
+
+function setBarLocked(locked: boolean) {
+  if (barLocked === locked) return;
+  barLocked = locked;
+  log('bar lock:', locked);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app:bar-lock', locked);
+  }
+}
+
+ipcMain.on('app:toggle-bar-lock', () => {
+  setBarLocked(!barLocked);
+});
+
+let panelNavActive = false;
+ipcMain.on('app:panel-nav', (_e, active: boolean) => {
+  panelNavActive = active;
+});
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { GlobalKeyboardListener } = require('keyspy');
+const keyListener = new GlobalKeyboardListener();
+
+keyListener.addListener((e: { name: string; state: string }, down: Record<string, boolean>) => {
+  if (e.state !== 'DOWN') return;
+
+  const hasOption = down['LEFT ALT'] || down['RIGHT ALT'];
+  const hasCmd = down['LEFT META'] || down['RIGHT META'];
+  const hasOther = down['LEFT CTRL'] || down['RIGHT CTRL'] ||
+                   down['LEFT SHIFT'] || down['RIGHT SHIFT'];
+
+  // Option+Slash = close active tab
+  if (e.name === 'FORWARD SLASH' && hasOption && !hasCmd && !hasOther) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:close-tab');
+    }
+    return true;
+  }
+
+  // Option+Enter → open session from panel nav, suppress
+  if (e.name === 'RETURN' && hasOption && !hasCmd && !hasOther) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:enter');
+    }
+    return true;
+  }
+
+  const isArrow = e.name === 'LEFT ARROW' || e.name === 'RIGHT ARROW' ||
+                  e.name === 'UP ARROW' || e.name === 'DOWN ARROW';
+  if (!isArrow) return;
+
+  // Option+Up = collapse bar, Option+Down = expand bar
+  if (hasOption && !hasCmd && !hasOther) {
+    if (e.name === 'UP ARROW') { setBarMode(true); return true; }
+    if (e.name === 'DOWN ARROW') { setBarMode(false); return true; }
+    return;
+  }
+
+  // Cmd+Up = lock arrows, Cmd+Down = unlock arrows
+  if (hasCmd && !hasOption && !hasOther) {
+    if (e.name === 'UP ARROW') { setBarLocked(true); return true; }
+    if (e.name === 'DOWN ARROW') { setBarLocked(false); return true; }
+    return;
+  }
+
+  // Bare arrows when locked → forward to renderer, suppress
+  // Left/right always; up/down only during panel nav
+  if (barLocked && !hasOption && !hasCmd && !hasOther) {
+    if (e.name === 'LEFT ARROW' || e.name === 'RIGHT ARROW') {
+      const dir = e.name === 'LEFT ARROW' ? 'left' : 'right';
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app:arrow', dir);
+      }
+      return true;
+    }
+    if (panelNavActive && (e.name === 'UP ARROW' || e.name === 'DOWN ARROW')) {
+      const dir = e.name === 'UP ARROW' ? 'up' : 'down';
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app:arrow', dir);
+      }
+      return true;
+    }
   }
 });
 
 ipcMain.on('pty:write', (_e, id: string, data: string) => ptySessions.get(id)?.write(data));
 ipcMain.on('pty:resize', (_e, id: string, cols: number, rows: number) => {
   ptySessions.get(id)?.resize(cols, rows);
-  // Also resize the tmux session so it matches
-  const sessionName = tmuxSessions.get(id);
-  if (sessionName) {
-    execFile(TMUX, ['resize-window', '-t', sessionName, '-x', String(cols), '-y', String(rows)], (_err) => { /* ignore */ });
-  }
 });
 
 ipcMain.on('pty:kill', (_e, id: string) => {
   log('pty:kill called for', id);
-  const sessionName = tmuxSessions.get(id);
-  if (sessionName) {
-    execFile(TMUX, ['kill-session', '-t', sessionName], (err) => {
-      if (err) log('tmux kill-session failed:', err.message);
-      else log('tmux session killed:', sessionName);
-    });
-    tmuxSessions.delete(id);
-  }
   ptySessions.get(id)?.kill();
   ptySessions.delete(id);
+  tabNames.delete(id);
+  tabWorking.delete(id);
+  scrollback.delete(id);
+  wsClients.delete(id);
+  broadcastSessions();
 });
 
 let voiceControl: { stop: () => void } | null = null;
 
-// Kill all ai-tab tmux sessions on app quit
+// Kill all PTY processes on app quit
 app.on('before-quit', () => {
   voiceControl?.stop();
-  for (const [id, sessionName] of tmuxSessions) {
-    try { execSync(`${TMUX} kill-session -t '${sessionName}'`); } catch (_e) { /* ignore */ }
-    tmuxSessions.delete(id);
+  keyListener.kill();
+  wsServer.close();
+  for (const proc of ptySessions.values()) {
+    proc.kill();
   }
+  ptySessions.clear();
 });
 
 app.on('ready', () => {
@@ -595,7 +815,9 @@ app.on('ready', () => {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    titleBarStyle: 'hiddenInset',
+    minHeight: 1,
+    alwaysOnTop: true,
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
     },
@@ -606,7 +828,7 @@ app.on('ready', () => {
   mainWindow.webContents.on('console-message', (_e, _level, msg) => log('[renderer]', msg));
 
   voiceControl = initVoice({
-    tmuxSessions,
+    ptySessions,
     getActiveTabId: () => activeTabId,
     getMainWindow: () => mainWindow,
     log,

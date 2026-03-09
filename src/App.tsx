@@ -10,10 +10,10 @@ interface Tab { id: string; label: string; resumeSessionId?: string; }
 let counter = 1;
 const makeTab = (): Tab => ({ id: crypto.randomUUID(), label: `Session ${counter++}` });
 
-function SortableTab({ tab, isActive, isRenaming, renameValue, renameInputRef, voiceState, onSetActive, onContextMenu, onRenameChange, onCommitRename, onCancelRename, onClose }: {
+function SortableTab({ tab, isActive, isRenaming, renameValue, renameInputRef, voiceState, status, onSetActive, onContextMenu, onRenameChange, onCommitRename, onCancelRename, onClose }: {
   tab: Tab; isActive: boolean; isRenaming: boolean; renameValue: string;
   renameInputRef: React.RefObject<HTMLInputElement | null>;
-  voiceState: string | null;
+  voiceState: string | null; status?: 'working' | 'done';
   onSetActive: () => void; onContextMenu: (e: React.MouseEvent) => void;
   onRenameChange: (v: string) => void; onCommitRename: () => void; onCancelRename: () => void;
   onClose: (e: React.MouseEvent) => void;
@@ -28,16 +28,18 @@ function SortableTab({ tab, isActive, isRenaming, renameValue, renameInputRef, v
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}
       className={`tab ${isActive ? 'active' : ''}`}
       onClick={onSetActive} onContextMenu={onContextMenu}>
-      {voiceState && <div className={`voice-dot ${voiceState}`} />}
+      <button className="close-btn" onClick={onClose}>×</button>
       {isRenaming ? (
         <input ref={renameInputRef} className="tab-rename-input" value={renameValue}
           onChange={e => onRenameChange(e.target.value)} onBlur={onCommitRename}
           onKeyDown={e => { if (e.key === 'Enter') onCommitRename(); if (e.key === 'Escape') onCancelRename(); }}
           onClick={e => e.stopPropagation()} />
       ) : (
-        <span>{tab.label}</span>
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.label}</span>
       )}
-      <button className="close-btn" onClick={onClose}>×</button>
+      {voiceState && <div className={`voice-dot ${voiceState}`} />}
+      {status === 'working' && <span className="tab-spinner" />}
+      {status === 'done' && <span className="tab-done-dot" />}
     </div>
   );
 }
@@ -66,8 +68,89 @@ function timeAgo(mtime: number): string {
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => [makeTab()]);
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
 
-  useEffect(() => { window.pty.notifyActive(activeId); }, [activeId]);
+  const [barMode, setBarMode] = useState(false);
+  const [barLocked, setBarLocked] = useState(false);
+  useEffect(() => { window.app.setBarMode(barMode); }, [barMode]);
+
+  // Panel navigation state (must be before handleArrow)
+  const [panelNav, setPanelNav] = useState(false);
+  const [panelNavIdx, setPanelNavIdx] = useState(0);
+  const panelNavRef = useRef(false);
+  panelNavRef.current = panelNav;
+
+  useEffect(() => { window.app.setPanelNav(panelNav); }, [panelNav]);
+
+  const [panelOpen, setPanelOpen] = useState(true);
+  const panelOpenRef = useRef(panelOpen);
+  panelOpenRef.current = panelOpen;
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  const handleArrow = useCallback((direction: string) => {
+    if (panelNavRef.current) {
+      if (direction === 'up') {
+        setPanelNavIdx(prev => Math.max(0, prev - 1));
+      } else if (direction === 'down') {
+        setPanelNavIdx(prev => Math.min(sessionsRef.current.length - 1, prev + 1));
+      } else if (direction === 'left') {
+        setPanelNav(false);
+        setPanelOpen(false);
+      } else if (direction === 'right') {
+        setPanelNav(false);
+      }
+      return;
+    }
+    if (direction === 'left' || direction === 'right') {
+      setTabs(prev => {
+        const idx = prev.findIndex(t => t.id === activeIdRef.current);
+        if (idx === -1) return prev;
+        const next = direction === 'left' ? idx - 1 : idx + 1;
+        if (next >= 0 && next < prev.length) {
+          setActiveId(prev[next].id);
+        } else if (direction === 'right' && idx === prev.length - 1) {
+          const tab = makeTab();
+          setActiveId(tab.id);
+          return [...prev, tab];
+        } else if (direction === 'left' && idx === 0) {
+          setPanelOpen(true);
+          setPanelNav(true);
+          setPanelNavIdx(0);
+        }
+        return prev;
+      });
+    }
+  }, []);
+
+  // Listen for bar mode changes from main (keyspy Option+Up/Down)
+  useEffect(() => {
+    return window.app.onBarModeChanged(setBarMode);
+  }, []);
+
+  // Listen for bar lock state changes
+  useEffect(() => {
+    return window.app.onBarLockChanged(setBarLocked);
+  }, []);
+
+  // Listen for global arrow commands (when bar is locked via keyspy)
+  useEffect(() => {
+    return window.app.onArrow(handleArrow);
+  }, [handleArrow]);
+
+  useEffect(() => {
+    window.pty.notifyActive(activeId);
+    if (!barMode) {
+      setTabStatus(prev => {
+        if (!prev[activeId]) return prev;
+        const next = { ...prev };
+        delete next[activeId];
+        return next;
+      });
+    }
+  }, [activeId, barMode]);
 
   // Drag-and-drop files → paste path into active terminal
   useEffect(() => {
@@ -90,29 +173,31 @@ export default function App() {
     };
   }, [activeId]);
 
-  // Bare left/right arrows switch tabs (Option+arrows pass through to terminal)
+  // Bare left/right arrows switch tabs; Option+Up/Down controls bar mode (in-app)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.ctrlKey || e.metaKey) return;
+      // Option+Up/Down → bar mode
+      if (e.altKey && !e.shiftKey) {
+        if (e.key === 'ArrowUp') { e.preventDefault(); setBarMode(true); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); setBarMode(false); return; }
+      }
+      // Bare arrows → tab switching / panel nav
+      if (e.altKey) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
-        setTabs(prev => {
-          const idx = prev.findIndex(t => t.id === activeId);
-          if (idx === -1) return prev;
-          const next = e.key === 'ArrowLeft' ? idx - 1 : idx + 1;
-          if (next >= 0 && next < prev.length) setActiveId(prev[next].id);
-          return prev;
-        });
+        handleArrow(e.key === 'ArrowLeft' ? 'left' : 'right');
+      } else if (panelNavRef.current && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        handleArrow(e.key === 'ArrowUp' ? 'up' : 'down');
       }
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [activeId]);
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
+  }, [handleArrow]);
 
   const [voiceState, setVoiceState] = useState<string>('idle');
   const [voiceTabId, setVoiceTabId] = useState<string | null>(null);
-  const [panelOpen, setPanelOpen] = useState(true);
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [dateGroups, setDateGroups] = useState<string[]>([]);
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
   const [dateSessions, setDateSessions] = useState<Record<string, SessionInfo[]>>({});
@@ -124,6 +209,7 @@ export default function App() {
   // Track which session IDs are open in tabs: sessionId → tabId
   const [openSessions, setOpenSessions] = useState<Record<string, string>>({});
   const [confirmHideId, setConfirmHideId] = useState<string | null>(null);
+  const [tabStatus, setTabStatus] = useState<Record<string, 'working' | 'done'>>({});
 
   useEffect(() => {
     return window.pty.onRename((tabId, title) => {
@@ -157,6 +243,18 @@ export default function App() {
       }
     });
   }, [tabs]);
+
+  useEffect(() => {
+    const cleanupWorking = window.pty.onWorking((tabId) => {
+      if (tabId === activeIdRef.current) return;
+      setTabStatus(prev => prev[tabId] === 'working' ? prev : { ...prev, [tabId]: 'working' });
+    });
+    const cleanupBell = window.pty.onBell((tabId) => {
+      if (tabId === activeIdRef.current) return;
+      setTabStatus(prev => prev[tabId] === 'done' ? prev : { ...prev, [tabId]: 'done' });
+    });
+    return () => { cleanupWorking(); cleanupBell(); };
+  }, []);
 
   useEffect(() => {
     return window.sessions.onConfirmHide(setConfirmHideId);
@@ -236,16 +334,43 @@ export default function App() {
     const existingTabId = openSessions[session.id];
     if (existingTabId) {
       setActiveId(existingTabId);
-      return;
+    } else {
+      const tab: Tab = {
+        id: crypto.randomUUID(),
+        label: session.title.slice(0, 30),
+        resumeSessionId: session.id,
+      };
+      setTabs(prev => [...prev, tab]);
+      setActiveId(tab.id);
     }
-    const tab: Tab = {
-      id: crypto.randomUUID(),
-      label: session.title.slice(0, 30),
-      resumeSessionId: session.id,
-    };
-    setTabs(prev => [...prev, tab]);
-    setActiveId(tab.id);
+    setPanelOpen(false);
   }, [openSessions]);
+
+  const handlePanelEnter = useCallback(() => {
+    if (!panelNavRef.current) return;
+    const session = sessionsRef.current[panelNavIdx];
+    if (session) {
+      resumeSession(session);
+      setPanelNav(false);
+    }
+  }, [panelNavIdx, resumeSession]);
+
+  // Option+Enter opens selected session in panel nav mode (in-app)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && e.altKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        handlePanelEnter();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [handlePanelEnter]);
+
+  // Option+Enter via keyspy (global, when bar locked)
+  useEffect(() => {
+    return window.app.onEnter(handlePanelEnter);
+  }, [handlePanelEnter]);
 
   const confirmHide = useCallback(async () => {
     if (!confirmHideId) return;
@@ -271,27 +396,29 @@ export default function App() {
       return next;
     });
     setTabs(prev => {
+      const idx = prev.findIndex(t => t.id === id);
       const next = prev.filter(t => t.id !== id);
       if (next.length === 0) {
         const tab = makeTab();
         setActiveId(tab.id);
         return [tab];
       }
-      if (activeId === id) setActiveId(next[next.length - 1].id);
+      if (activeId === id) {
+        setActiveId(next[Math.min(idx, next.length - 1)].id);
+      }
       return next;
     });
   }, [activeId]);
 
-  // Pop out to iTerm → close the tab in the app
+  // Option+Slash closes the active tab (via keyspy)
   useEffect(() => {
-    return window.pty.onPoppedOut((tabId) => {
-      closeTab(tabId);
-    });
+    return window.app.onCloseTab(() => closeTab(activeIdRef.current));
   }, [closeTab]);
 
   return (
     <div className="app">
-      <div className="tab-bar">
+      <div className={`tab-bar ${barMode ? 'bar-mode' : ''}`}>
+        <span className={`bar-lock-indicator ${barLocked ? 'active' : ''}`} onClick={() => window.app.toggleBarLock()}>◆</span>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <SortableContext items={tabs.map(t => t.id)} strategy={horizontalListSortingStrategy}>
             <div className="tabs">
@@ -299,7 +426,8 @@ export default function App() {
                 <SortableTab key={tab.id} tab={tab} isActive={tab.id === activeId}
                   isRenaming={renamingTabId === tab.id} renameValue={renameValue} renameInputRef={renameInputRef}
                   voiceState={voiceTabId === tab.id && voiceState !== 'idle' ? voiceState : null}
-                  onSetActive={() => setActiveId(tab.id)}
+                  status={tabStatus[tab.id]}
+                  onSetActive={() => { if (tab.id === activeId) { setBarMode(!barMode); } else { setActiveId(tab.id); setBarMode(false); } }}
                   onContextMenu={e => { e.preventDefault(); window.pty.contextMenu(tab.id); }}
                   onRenameChange={setRenameValue} onCommitRename={commitRename}
                   onCancelRename={() => setRenamingTabId(null)}
@@ -310,16 +438,15 @@ export default function App() {
         </DndContext>
         <button className="new-tab-btn" onClick={addTab} title="New session">+</button>
       </div>
-      <div className="main-content">
+      <div className="main-content" style={{ display: barMode ? 'none' : undefined }}>
         <div className={`left-panel ${panelOpen ? 'open' : 'collapsed'}`}>
           <div className="panel-content">
             <div className="panel-header">
               <span className="panel-title">Sessions</span>
-              <button className="panel-toggle" onClick={() => setPanelOpen(false)}>‹</button>
             </div>
             <div className="session-list">
-              {sessions.map(s => (
-                <div key={s.id} className={`session-item ${openSessions[s.id] ? 'open' : ''}`}
+              {sessions.map((s, i) => (
+                <div key={s.id} className={`session-item ${openSessions[s.id] ? 'open' : ''} ${panelNav && i === panelNavIdx ? 'nav-selected' : ''}`}
                   onClick={() => resumeSession(s)}
                   onContextMenu={e => { e.preventDefault(); window.sessions.contextMenu(s.id); }}>
                   <div className="session-title">{s.title}</div>
@@ -345,13 +472,14 @@ export default function App() {
                 ))}
             </div>
           </div>
+          <button className="panel-close-rail" onClick={() => setPanelOpen(false)}>‹</button>
         </div>
         {!panelOpen && (
           <button className="panel-expand" onClick={() => setPanelOpen(true)}>›</button>
         )}
         <div className="terminal-area">
           {tabs.map(tab => (
-            <TerminalTab key={tab.id} id={tab.id} active={tab.id === activeId} resumeSessionId={tab.resumeSessionId} />
+            <TerminalTab key={tab.id} id={tab.id} active={tab.id === activeId} resumeSessionId={tab.resumeSessionId} panelNav={panelNav} />
           ))}
         </div>
       </div>
