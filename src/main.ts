@@ -105,8 +105,9 @@ wsServer.on('connection', (ws: WebSocket) => {
           log(`phone voice: received ${durationS?.toFixed(1)}s audio for tab ${tabId}`);
           transcribeAudioFile(audioPath, durationS || 0, log, (text) => {
             if (!text) { log('phone voice: empty transcription'); return; }
-            log('phone voice: transcribed:', text.slice(0, 100));
-            ptySessions.get(tabId)?.write(text + '\r');
+            const cleaned = text.replace(/[\r\n]+/g, ' ').trim();
+            log('phone voice: transcribed:', cleaned.slice(0, 100));
+            ptySessions.get(tabId)?.write(cleaned + '\r');
           });
           break;
         }

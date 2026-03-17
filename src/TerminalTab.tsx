@@ -38,10 +38,35 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
       return true;
     });
 
+    // Track scroll position to detect unexpected jumps
+    let lastViewportY = 0;
+    let lastAltBufferActive = false;
+    const scrollCheck = setInterval(() => {
+      const y = term.buffer.active.viewportY;
+      const alt = term.buffer.active === term.buffer.alternate;
+      if (y !== lastViewportY || alt !== lastAltBufferActive) {
+        if (lastViewportY > 5 && y === 0 && !alt) {
+          console.log(`[scroll-debug] ${id} JUMP TO TOP: viewportY ${lastViewportY} → ${y}, alt=${alt}, baseY=${term.buffer.active.baseY}, cols=${term.cols} rows=${term.rows}`);
+          console.trace('[scroll-debug] stack');
+        }
+        lastViewportY = y;
+        lastAltBufferActive = alt;
+      }
+    }, 100);
+
     // Refit whenever the container size changes (window resize, panel toggle, etc.)
     const el = containerRef.current!;
+    let lastW = el.clientWidth;
+    let lastH = el.clientHeight;
     const ro = new ResizeObserver(() => {
       if (el.clientHeight > 0 && el.clientWidth > 0) {
+        const w = el.clientWidth;
+        const h = el.clientHeight;
+        if (w !== lastW || h !== lastH) {
+          console.log(`[scroll-debug] ${id} ResizeObserver: container ${lastW}x${lastH} → ${w}x${h}, term ${term.cols}x${term.rows}, viewportY=${term.buffer.active.viewportY}`);
+          lastW = w;
+          lastH = h;
+        }
         fit.fit();
       }
     });
@@ -59,7 +84,7 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
       cleanupData = window.pty.onData(id, data => term.write(data));
       term.onData(data => window.pty.write(id, data));
       term.onResize(({ cols, rows }) => {
-        console.log(`[TerminalTab] onResize fired: ${cols}x${rows}`);
+        console.log(`[scroll-debug] ${id} onResize: ${term.cols}x${term.rows} → ${cols}x${rows}, viewportY=${term.buffer.active.viewportY}`);
         window.pty.resize(id, cols, rows);
       });
       fit.fit();
@@ -73,6 +98,7 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
 
     return () => {
       disposed = true;
+      clearInterval(scrollCheck);
       ro.disconnect();
       cleanupData?.();
       window.pty.kill(id);
@@ -82,7 +108,10 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
 
   useEffect(() => {
     if (active) {
-      setTimeout(() => fitRef.current?.fit(), 0);
+      setTimeout(() => {
+        fitRef.current?.fit();
+        termRef.current?.scrollToBottom();
+      }, 0);
       termRef.current?.focus();
     }
   }, [active]);

@@ -173,7 +173,7 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
       setState('idle');
       return;
     }
-    const cleaned = applySubs(text);
+    const cleaned = applySubs(text).replace(/[\r\n]+/g, ' ').trim();
     log('voice: transcribed:', cleaned);
     deliverText(cleaned, sendEnter);
     recordingTabId = null;
