@@ -148,6 +148,14 @@ wsServer.on('connection', (ws: WebSocket) => {
             .slice(0, 50)
             .map(s => ({ id: s.id, title: nameCache[s.id] || s.title, timestamp: s.timestamp, source: s.source }));
           ws.send(JSON.stringify({ type: 'history', sessions }));
+          // Retroactively name any sessions missing from the cache
+          for (const s of sessions) {
+            if (nameCache[s.id]) continue;
+            const jsonlPath = findSessionJSONL(s.id);
+            if (!jsonlPath) continue;
+            const pairs = readConversationPairs(jsonlPath, 1);
+            if (pairs.length) generateName(s.id, `history-${s.id}`, pairs);
+          }
           break;
         }
         case 'regenerate_name': {
