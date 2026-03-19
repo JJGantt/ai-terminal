@@ -36,6 +36,10 @@ interface Window {
     onWorking: (cb: (tabId: string) => void) => () => void;
     onKilled: (cb: (tabId: string) => void) => () => void;
     getStrippedScrollback: (id: string) => Promise<string>;
+    getTranscript: (tabId: string) => Promise<{ role: string; text: string }[]>;
+    subscribeTranscript: (tabId: string) => void;
+    unsubscribeTranscript: (tabId: string) => void;
+    onTranscriptData: (tabId: string, cb: (messages: { role: string; text: string }[]) => void) => () => void;
   };
   config: {
     get: () => Promise<{ historyDir: string; voiceAutoStop: boolean; voiceAutoStopSeconds: number }>;

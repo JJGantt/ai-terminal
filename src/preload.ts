@@ -61,6 +61,14 @@ contextBridge.exposeInMainWorld('pty', {
     return () => ipcRenderer.removeListener('tab:working', handler);
   },
   getStrippedScrollback: (id: string) => ipcRenderer.invoke('pty:stripped-scrollback', id),
+  getTranscript: (tabId: string) => ipcRenderer.invoke('transcript:get', tabId),
+  subscribeTranscript: (tabId: string) => ipcRenderer.send('transcript:subscribe', tabId),
+  unsubscribeTranscript: (tabId: string) => ipcRenderer.send('transcript:unsubscribe', tabId),
+  onTranscriptData: (tabId: string, cb: (messages: { role: string; text: string }[]) => void) => {
+    const handler = (_: unknown, messages: { role: string; text: string }[]) => cb(messages);
+    ipcRenderer.on(`transcript:data:${tabId}`, handler);
+    return () => ipcRenderer.removeListener(`transcript:data:${tabId}`, handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('config', {

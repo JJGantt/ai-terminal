@@ -980,6 +980,84 @@ ipcMain.handle('pty:stripped-scrollback', (_e, id: string) => {
   return raw ? stripAltBuffer(raw) : '';
 });
 
+// Transcript view: parse JSONL for clean user/assistant text messages
+interface TranscriptMessage { role: 'user' | 'assistant'; text: string; }
+
+function parseTranscript(sessionId: string): TranscriptMessage[] {
+  const jsonlPath = findSessionJSONL(sessionId);
+  if (!jsonlPath) return [];
+  const messages: TranscriptMessage[] = [];
+  try {
+    const lines = fs.readFileSync(jsonlPath, 'utf-8').split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === 'user' && msg.message?.role === 'user') {
+          const c = msg.message.content;
+          let text = '';
+          if (typeof c === 'string') text = c;
+          else if (Array.isArray(c)) {
+            text = c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
+          }
+          if (text.trim()) messages.push({ role: 'user', text: text.trim() });
+        } else if (msg.type === 'assistant' && msg.message?.role === 'assistant') {
+          const c = msg.message.content;
+          if (Array.isArray(c)) {
+            const text = c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim();
+            if (text) messages.push({ role: 'assistant', text });
+          }
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  } catch { /* file read error */ }
+  return messages;
+}
+
+const transcriptWatchers = new Map<string, { watcher: fs.StatWatcher; lastSize: number; sender: WebContents }>();
+
+ipcMain.handle('transcript:get', (_e, tabId: string) => {
+  const sessionId = tabSessionIds.get(tabId);
+  if (!sessionId) return [];
+  return parseTranscript(sessionId);
+});
+
+ipcMain.on('transcript:subscribe', (event, tabId: string) => {
+  const sessionId = tabSessionIds.get(tabId);
+  if (!sessionId) return;
+  const jsonlPath = findSessionJSONL(sessionId);
+  if (!jsonlPath) return;
+
+  // Clean up existing watcher for this tab
+  const existing = transcriptWatchers.get(tabId);
+  if (existing) { fs.unwatchFile(jsonlPath); transcriptWatchers.delete(tabId); }
+
+  let lastSize = 0;
+  try { lastSize = fs.statSync(jsonlPath).size; } catch { }
+
+  const watcher = fs.watchFile(jsonlPath, { interval: 500 }, (curr) => {
+    if (curr.size <= lastSize) return;
+    lastSize = curr.size;
+    const messages = parseTranscript(sessionId);
+    const sender = event.sender;
+    if (sender && !sender.isDestroyed()) {
+      sender.send(`transcript:data:${tabId}`, messages);
+    }
+  });
+  transcriptWatchers.set(tabId, { watcher, lastSize, sender: event.sender });
+});
+
+ipcMain.on('transcript:unsubscribe', (_e, tabId: string) => {
+  const entry = transcriptWatchers.get(tabId);
+  if (!entry) return;
+  const sessionId = tabSessionIds.get(tabId);
+  if (sessionId) {
+    const jsonlPath = findSessionJSONL(sessionId);
+    if (jsonlPath) fs.unwatchFile(jsonlPath);
+  }
+  transcriptWatchers.delete(tabId);
+});
+
 ipcMain.on('pty:write', (_e, id: string, data: string) => {
   if (id.startsWith('pi-')) { piSend({ type: 'input', tabId: id, data }); }
   else { ptySessions.get(id)?.write(data); }
