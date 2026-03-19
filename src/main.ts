@@ -55,6 +55,29 @@ function appendScrollback(tabId: string, data: string) {
   scrollback.set(tabId, next.length > MAX_SCROLLBACK ? next.slice(-MAX_SCROLLBACK) : next);
 }
 
+const ALT_ENTER = ['\x1b[?1049h', '\x1b[?47h', '\x1b[?1047h'];
+const ALT_EXIT  = ['\x1b[?1049l', '\x1b[?47l', '\x1b[?1047l'];
+
+function stripAltBuffer(raw: string): string {
+  let result = '';
+  let inAlt = false;
+  let i = 0;
+  while (i < raw.length) {
+    let matched = false;
+    for (const seq of ALT_ENTER) {
+      if (raw.startsWith(seq, i)) { inAlt = true; i += seq.length; matched = true; break; }
+    }
+    if (matched) continue;
+    for (const seq of ALT_EXIT) {
+      if (raw.startsWith(seq, i)) { inAlt = false; i += seq.length; matched = true; break; }
+    }
+    if (matched) continue;
+    if (!inAlt) result += raw[i];
+    i++;
+  }
+  return result;
+}
+
 function broadcastData(tabId: string, data: string) {
   const subs = wsClients.get(tabId);
   if (!subs?.size) return;
@@ -950,6 +973,12 @@ keyListener.addListener((e: { name: string; state: string }, down: Record<string
 // Config read/write for renderer settings UI
 ipcMain.handle('config:get', () => loadConfig());
 ipcMain.on('config:set', (_e, partial: Record<string, unknown>) => { saveConfig(partial); });
+
+// Scroll lock: return stripped scrollback for frozen terminal view
+ipcMain.handle('pty:stripped-scrollback', (_e, id: string) => {
+  const raw = scrollback.get(id);
+  return raw ? stripAltBuffer(raw) : '';
+});
 
 ipcMain.on('pty:write', (_e, id: string, data: string) => {
   if (id.startsWith('pi-')) { piSend({ type: 'input', tabId: id, data }); }

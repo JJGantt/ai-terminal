@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('pty', {
     ipcRenderer.on('tab:working', handler);
     return () => ipcRenderer.removeListener('tab:working', handler);
   },
+  getStrippedScrollback: (id: string) => ipcRenderer.invoke('pty:stripped-scrollback', id),
 });
 
 contextBridge.exposeInMainWorld('config', {

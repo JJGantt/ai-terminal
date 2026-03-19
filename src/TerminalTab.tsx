@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -7,10 +7,15 @@ interface Props { id: string; active: boolean; resumeSessionId?: string; panelNa
 
 export default function TerminalTab({ id, active, resumeSessionId, panelNav }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const frozenContainerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const panelNavRef = useRef(panelNav);
   panelNavRef.current = panelNav;
+
+  const [scrollLock, setScrollLock] = useState(false);
+  const frozenTermRef = useRef<Terminal | null>(null);
+  const frozenFitRef = useRef<FitAddon | null>(null);
 
   useEffect(() => {
     console.log('[TerminalTab] mounting', id);
@@ -137,10 +142,91 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
     };
   }, [active, id]);
 
+  // Enter scroll lock on scroll-up while in alt buffer
+  useEffect(() => {
+    if (!active) return;
+    const el = containerRef.current;
+    const handleWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0 && !scrollLock) {
+        const term = termRef.current;
+        if (term && term.buffer.active === term.buffer.alternate) {
+          e.preventDefault();
+          setScrollLock(true);
+        }
+      }
+    };
+    el?.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el?.removeEventListener('wheel', handleWheel);
+  }, [active, scrollLock]);
+
+  // Create/destroy frozen terminal when scroll lock toggles
+  useEffect(() => {
+    if (!scrollLock || !frozenContainerRef.current) return;
+
+    const frozenTerm = new Terminal({
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontSize: 13,
+      theme: { background: '#1a1a2e' },
+      cursorBlink: false,
+      scrollSensitivity: 3,
+      scrollback: 50000,
+      disableStdin: true,
+    });
+    const frozenFit = new FitAddon();
+    frozenTerm.loadAddon(frozenFit);
+    frozenTerm.open(frozenContainerRef.current);
+    frozenTermRef.current = frozenTerm;
+    frozenFitRef.current = frozenFit;
+    frozenFit.fit();
+
+    // Load stripped scrollback
+    window.pty.getStrippedScrollback(id).then((data: string) => {
+      frozenTerm.write(data);
+      // Scroll to bottom initially so user can scroll up from there
+      setTimeout(() => frozenTerm.scrollToBottom(), 50);
+    });
+
+    // Escape exits scroll lock
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setScrollLock(false);
+    };
+    window.addEventListener('keydown', handleKey);
+
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      frozenTerm.dispose();
+      frozenTermRef.current = null;
+      frozenFitRef.current = null;
+    };
+  }, [scrollLock, id]);
+
+  const exitScrollLock = useCallback(() => setScrollLock(false), []);
+
   return (
-    <div
-      ref={containerRef}
-      style={{ display: active ? 'flex' : 'none', flex: 1, padding: 4 }}
-    />
+    <div style={{ display: active ? 'flex' : 'none', flex: 1, position: 'relative', padding: 4 }}>
+      <div
+        ref={containerRef}
+        style={{ flex: 1, display: scrollLock ? 'none' : 'flex' }}
+      />
+      {scrollLock && (
+        <>
+          <div
+            ref={frozenContainerRef}
+            style={{ flex: 1, display: 'flex' }}
+          />
+          <button
+            onClick={exitScrollLock}
+            style={{
+              position: 'absolute', bottom: 12, right: 12, zIndex: 10,
+              padding: '6px 16px', borderRadius: 20, border: 'none',
+              background: 'rgba(74, 158, 255, 0.85)', color: '#fff',
+              fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            Resume Live
+          </button>
+        </>
+      )}
+    </div>
   );
 }
