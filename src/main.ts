@@ -356,6 +356,21 @@ const ipcServer = http.createServer((req, res) => {
           mainWindow.webContents.send('tab:session-mapped', tabId, sessionId);
         }
 
+        // Set up or refresh transcript watcher if one is pending/active for this tab
+        const pendingSender = pendingTranscriptSenders.get(tabId);
+        if (pendingSender) {
+          pendingTranscriptSenders.delete(tabId);
+          setupTranscriptWatcher(tabId, pendingSender);
+          const msgs = parseTranscript(sessionId);
+          if (!pendingSender.isDestroyed()) pendingSender.send(`transcript:data:${tabId}`, msgs);
+        } else if (transcriptWatchers.has(tabId)) {
+          // Session ID changed (new session on same tab) — refresh watcher to new file
+          const entry = transcriptWatchers.get(tabId)!;
+          setupTranscriptWatcher(tabId, entry.sender);
+          const msgs = parseTranscript(sessionId);
+          if (!entry.sender.isDestroyed()) entry.sender.send(`transcript:data:${tabId}`, msgs);
+        }
+
         // If we have a cached name, apply it immediately
         if (nameCache[sessionId]) {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1063,22 +1078,21 @@ function parseTranscript(sessionId: string): TranscriptMessage[] {
   return messages;
 }
 
-const transcriptWatchers = new Map<string, { watcher: fs.StatWatcher; lastSize: number; sender: WebContents }>();
+const transcriptWatchers = new Map<string, { watcher: fs.StatWatcher; lastSize: number; sender: WebContents; jsonlPath: string }>();
+// Senders waiting for a session ID to be mapped before watcher can be set up
+const pendingTranscriptSenders = new Map<string, WebContents>();
 
-ipcMain.handle('transcript:get', (_e, tabId: string) => {
+function setupTranscriptWatcher(tabId: string, sender: WebContents) {
   const resolved = resolveJSONLForTab(tabId);
-  if (!resolved) return [];
-  return parseTranscript(resolved.sessionId);
-});
-
-ipcMain.on('transcript:subscribe', (event, tabId: string) => {
-  const resolved = resolveJSONLForTab(tabId);
-  if (!resolved) return;
+  if (!resolved) {
+    pendingTranscriptSenders.set(tabId, sender);
+    return;
+  }
   const { jsonlPath, sessionId } = resolved;
 
   // Clean up existing watcher for this tab
   const existing = transcriptWatchers.get(tabId);
-  if (existing) { fs.unwatchFile(jsonlPath); transcriptWatchers.delete(tabId); }
+  if (existing) { fs.unwatchFile(existing.jsonlPath); transcriptWatchers.delete(tabId); }
 
   let lastSize = 0;
   try { lastSize = fs.statSync(jsonlPath).size; } catch { }
@@ -1087,19 +1101,28 @@ ipcMain.on('transcript:subscribe', (event, tabId: string) => {
     if (curr.size <= lastSize) return;
     lastSize = curr.size;
     const messages = parseTranscript(sessionId);
-    const sender = event.sender;
     if (sender && !sender.isDestroyed()) {
       sender.send(`transcript:data:${tabId}`, messages);
     }
   });
-  transcriptWatchers.set(tabId, { watcher, lastSize, sender: event.sender });
+  transcriptWatchers.set(tabId, { watcher, lastSize, sender, jsonlPath });
+}
+
+ipcMain.handle('transcript:get', (_e, tabId: string) => {
+  const resolved = resolveJSONLForTab(tabId);
+  if (!resolved) return [];
+  return parseTranscript(resolved.sessionId);
+});
+
+ipcMain.on('transcript:subscribe', (event, tabId: string) => {
+  setupTranscriptWatcher(tabId, event.sender);
 });
 
 ipcMain.on('transcript:unsubscribe', (_e, tabId: string) => {
+  pendingTranscriptSenders.delete(tabId);
   const entry = transcriptWatchers.get(tabId);
   if (!entry) return;
-  const resolved = resolveJSONLForTab(tabId);
-  if (resolved) fs.unwatchFile(resolved.jsonlPath);
+  fs.unwatchFile(entry.jsonlPath);
   transcriptWatchers.delete(tabId);
 });
 
