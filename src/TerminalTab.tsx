@@ -142,22 +142,21 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
     };
   }, [active, id]);
 
-  // Enter scroll lock on scroll-up while in alt buffer
+  // Enter scroll lock via Cmd+Shift+S
   useEffect(() => {
     if (!active) return;
-    const el = containerRef.current;
-    const handleWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0 && !scrollLock) {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.metaKey && e.shiftKey && e.key === 's') {
+        e.preventDefault();
         const term = termRef.current;
         if (term && term.buffer.active === term.buffer.alternate) {
-          e.preventDefault();
           setScrollLock(true);
         }
       }
     };
-    el?.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el?.removeEventListener('wheel', handleWheel);
-  }, [active, scrollLock]);
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [active]);
 
   // Create/destroy frozen terminal when scroll lock toggles
   useEffect(() => {
@@ -217,13 +216,14 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
           <button
             onClick={exitScrollLock}
             style={{
-              position: 'absolute', bottom: 12, right: 12, zIndex: 10,
-              padding: '6px 16px', borderRadius: 20, border: 'none',
-              background: 'rgba(74, 158, 255, 0.85)', color: '#fff',
-              fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 10, padding: '10px 28px', borderRadius: 24, border: 'none',
+              background: 'rgba(74, 158, 255, 0.9)', color: '#fff',
+              fontSize: 14, fontWeight: 700, cursor: 'pointer',
+              boxShadow: '0 2px 12px rgba(74, 158, 255, 0.4)',
             }}
           >
-            Resume Live
+            Resume Live (Esc)
           </button>
         </>
       )}
