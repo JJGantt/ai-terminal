@@ -45,6 +45,7 @@ interface Window {
     onBarLockChanged: (cb: (locked: boolean) => void) => () => void;
     onCloseTab: (cb: () => void) => () => void;
     onEnter: (cb: () => void) => () => void;
+    onRefit: (cb: () => void) => () => void;
   };
   pi: {
     onTabs: (cb: (tabs: { id: string; name: string; working: boolean }[]) => void) => () => void;

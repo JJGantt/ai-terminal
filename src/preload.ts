@@ -91,6 +91,11 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('app:enter', handler);
     return () => ipcRenderer.removeListener('app:enter', handler);
   },
+  onRefit: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('app:refit', handler);
+    return () => ipcRenderer.removeListener('app:refit', handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('pi', {

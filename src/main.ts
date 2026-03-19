@@ -987,6 +987,13 @@ app.on('ready', () => {
     },
   });
 
+  // Re-fit terminal when window gains focus (reclaim dimensions from phone)
+  mainWindow.on('focus', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:refit');
+    }
+  });
+
   mainWindow.webContents.on('did-finish-load', () => log('renderer loaded'));
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => log('FAILED', url, code, desc));
   mainWindow.webContents.on('console-message', (_e, _level, msg) => log('[renderer]', msg));

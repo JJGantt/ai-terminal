@@ -116,6 +116,14 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
     }
   }, [active]);
 
+  // Re-fit when window gains focus (reclaim dimensions from phone)
+  useEffect(() => {
+    if (!active) return;
+    return window.app.onRefit(() => {
+      fitRef.current?.fit();
+    });
+  }, [active, id]);
+
   return (
     <div
       ref={containerRef}
