@@ -17,6 +17,20 @@ const DEFAULTS: AppConfig = {
   voiceAutoStopSeconds: 3.0,
 };
 
+export function saveConfig(partial: Partial<AppConfig>) {
+  const current = loadConfig();
+  const merged = { ...current, ...partial };
+  // Convert historyDir back to ~ form for storage
+  const homedir = os.homedir();
+  const stored = {
+    ...merged,
+    historyDir: merged.historyDir.startsWith(homedir)
+      ? '~' + merged.historyDir.slice(homedir.length)
+      : merged.historyDir,
+  };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(stored, null, 2));
+}
+
 export function loadConfig(): AppConfig {
   try {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });

@@ -36,6 +36,10 @@ interface Window {
     onWorking: (cb: (tabId: string) => void) => () => void;
     onKilled: (cb: (tabId: string) => void) => () => void;
   };
+  config: {
+    get: () => Promise<{ historyDir: string; voiceAutoStop: boolean; voiceAutoStopSeconds: number }>;
+    set: (partial: Record<string, unknown>) => void;
+  };
   app: {
     setBarMode: (enabled: boolean) => void;
     setPanelNav: (active: boolean) => void;

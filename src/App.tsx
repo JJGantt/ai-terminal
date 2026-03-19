@@ -92,6 +92,8 @@ export default function App() {
   panelOpenRef.current = panelOpen;
   const [sessionsOpen, setSessionsOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [voiceAutoStop, setVoiceAutoStop] = useState(true);
+  const [voiceAutoStopSeconds, setVoiceAutoStopSeconds] = useState(3.0);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -536,7 +538,16 @@ export default function App() {
                   ))}
               </div>
             )}
-            <div className="panel-section-toggle settings-header" onClick={() => setSettingsOpen(o => !o)}>
+            <div className="panel-section-toggle settings-header" onClick={() => {
+              const opening = !settingsOpen;
+              setSettingsOpen(opening);
+              if (opening) {
+                window.config.get().then(cfg => {
+                  setVoiceAutoStop(cfg.voiceAutoStop);
+                  setVoiceAutoStopSeconds(cfg.voiceAutoStopSeconds);
+                });
+              }
+            }}>
               <span className="panel-title">Settings</span>
               <span className="panel-caret">{settingsOpen ? '▾' : '▸'}</span>
             </div>
@@ -555,6 +566,24 @@ export default function App() {
                 <button className="settings-cmd-btn" style={{ color: '#666', fontSize: '11px' }} onClick={() => window.pty.write(activeIdRef.current!, '\x1b/model\r')}>
                   Browse all…
                 </button>
+                <div className="settings-group-label">Voice</div>
+                <label className="settings-toggle">
+                  <input type="checkbox" checked={voiceAutoStop} onChange={e => {
+                    setVoiceAutoStop(e.target.checked);
+                    window.config.set({ voiceAutoStop: e.target.checked });
+                  }} />
+                  Auto-stop on silence
+                </label>
+                {voiceAutoStop && (
+                  <label className="settings-range">
+                    <span>Silence: {voiceAutoStopSeconds.toFixed(1)}s</span>
+                    <input type="range" min="1" max="6" step="0.5" value={voiceAutoStopSeconds} onChange={e => {
+                      const v = parseFloat(e.target.value);
+                      setVoiceAutoStopSeconds(v);
+                      window.config.set({ voiceAutoStopSeconds: v });
+                    }} />
+                  </label>
+                )}
               </div>
             )}
           </div>

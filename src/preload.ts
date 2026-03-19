@@ -62,6 +62,11 @@ contextBridge.exposeInMainWorld('pty', {
   },
 });
 
+contextBridge.exposeInMainWorld('config', {
+  get: () => ipcRenderer.invoke('config:get'),
+  set: (partial: Record<string, unknown>) => ipcRenderer.send('config:set', partial),
+});
+
 contextBridge.exposeInMainWorld('app', {
   setBarMode: (enabled: boolean) => ipcRenderer.send('app:bar-mode', enabled),
   setPanelNav: (active: boolean) => ipcRenderer.send('app:panel-nav', active),

@@ -8,7 +8,7 @@ import started from 'electron-squirrel-startup';
 import pty from 'node-pty';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initVoice, transcribeAudioFile } from './voice';
-import { loadConfig } from './config';
+import { loadConfig, saveConfig } from './config';
 
 if (started) app.quit();
 
@@ -946,6 +946,10 @@ keyListener.addListener((e: { name: string; state: string }, down: Record<string
     }
   }
 });
+
+// Config read/write for renderer settings UI
+ipcMain.handle('config:get', () => loadConfig());
+ipcMain.on('config:set', (_e, partial: Record<string, unknown>) => { saveConfig(partial); });
 
 ipcMain.on('pty:write', (_e, id: string, data: string) => {
   if (id.startsWith('pi-')) { piSend({ type: 'input', tabId: id, data }); }
