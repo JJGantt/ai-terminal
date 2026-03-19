@@ -28,8 +28,7 @@ const ADAPTIVE_THRESHOLD_S = 15;
 
 // Silence detection constants
 const SAMPLE_RATE = 16000;
-const BASELINE_WINDOW_S = 0.3;
-const SILENCE_MARGIN_DB = 15;
+const SILENCE_DROP_DB = 20;  // dB below peak = "silence"
 const MIN_RECORDING_S = 5;
 
 function calcRmsDb(buf: Buffer): number {
@@ -179,16 +178,12 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
 
   // Silence detection state
   let pcmChunks: Buffer[] = [];
-  let baselineSamples: number[] = [];
-  let baseline = -160;
-  let baselineEstablished = false;
+  let peakLevel = -160;
   let silenceStartedAt = 0;
 
   function resetSilenceState() {
     pcmChunks = [];
-    baselineSamples = [];
-    baseline = -160;
-    baselineEstablished = false;
+    peakLevel = -160;
     silenceStartedAt = 0;
   }
 
@@ -223,24 +218,18 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
       const db = calcRmsDb(chunk);
       const elapsed = (Date.now() - recordingStartedAt) / 1000;
 
-      // Phase 1: establish baseline
-      if (!baselineEstablished) {
-        baselineSamples.push(db);
-        if (elapsed >= BASELINE_WINDOW_S) {
-          baseline = baselineSamples.reduce((a, b) => a + b, 0) / baselineSamples.length;
-          baselineEstablished = true;
-          log(`voice: baseline ${baseline.toFixed(1)} dB (${baselineSamples.length} samples)`);
-        }
-        return;
-      }
+      // Track peak speech level
+      if (db > peakLevel) peakLevel = db;
 
-      // Phase 2: detect silence (only after minimum recording time)
+      // Don't auto-stop before minimum recording time
       if (elapsed < MIN_RECORDING_S) return;
-      const isSilent = db < baseline + SILENCE_MARGIN_DB;
+
+      // "Silence" = current level is significantly below peak speech level
+      const isSilent = db < peakLevel - SILENCE_DROP_DB;
       if (isSilent) {
         if (silenceStartedAt === 0) silenceStartedAt = Date.now();
         else if ((Date.now() - silenceStartedAt) / 1000 >= config.voiceAutoStopSeconds) {
-          log(`voice: auto-stop after ${config.voiceAutoStopSeconds}s silence`);
+          log(`voice: auto-stop: peak=${peakLevel.toFixed(1)}dB, current=${db.toFixed(1)}dB, silent ${config.voiceAutoStopSeconds}s`);
           stopAndTranscribe();
         }
       } else {
