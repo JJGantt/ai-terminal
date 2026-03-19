@@ -117,18 +117,23 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
   }, [active]);
 
   // Re-fit when window gains focus (reclaim dimensions from phone)
+  // Must force-send resize even if xterm thinks dimensions haven't changed,
+  // because the PTY may have been resized externally by the phone.
   useEffect(() => {
     if (!active) return;
-    const cleanupRefit = window.app.onRefit(() => {
+    const forceRefit = () => {
       fitRef.current?.fit();
-    });
-    // Also re-fit on click — covers alwaysOnTop windows that never lose focus
+      const term = termRef.current;
+      if (term && term.cols > 0 && term.rows > 0) {
+        window.pty.resize(id, term.cols, term.rows);
+      }
+    };
+    const cleanupRefit = window.app.onRefit(forceRefit);
     const el = containerRef.current;
-    const handleClick = () => fitRef.current?.fit();
-    el?.addEventListener('click', handleClick);
+    el?.addEventListener('click', forceRefit);
     return () => {
       cleanupRefit();
-      el?.removeEventListener('click', handleClick);
+      el?.removeEventListener('click', forceRefit);
     };
   }, [active, id]);
 
