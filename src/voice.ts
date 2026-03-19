@@ -28,8 +28,9 @@ const ADAPTIVE_THRESHOLD_S = 15;
 
 // Silence detection constants
 const SAMPLE_RATE = 16000;
-const BASELINE_WINDOW_S = 0.5;
-const SILENCE_MARGIN_DB = 8;
+const BASELINE_WINDOW_S = 0.3;
+const SILENCE_MARGIN_DB = 15;
+const MIN_RECORDING_S = 5;
 
 function calcRmsDb(buf: Buffer): number {
   let sum = 0;
@@ -233,7 +234,8 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
         return;
       }
 
-      // Phase 2: detect silence
+      // Phase 2: detect silence (only after minimum recording time)
+      if (elapsed < MIN_RECORDING_S) return;
       const isSilent = db < baseline + SILENCE_MARGIN_DB;
       if (isSilent) {
         if (silenceStartedAt === 0) silenceStartedAt = Date.now();
