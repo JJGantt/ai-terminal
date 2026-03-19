@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { systemPreferences, BrowserWindow, ipcMain } from 'electron';
+import { loadConfig } from './config';
 
 type State = 'idle' | 'recording' | 'transcribing';
 
@@ -24,6 +25,41 @@ const GET_SELECTION = path.join(__dirname, '../../native/get-selection');
 const SOUNDS = '/System/Library/Sounds';
 const WAV_PATH = '/tmp/ai-terminal-voice.wav';
 const ADAPTIVE_THRESHOLD_S = 15;
+
+// Silence detection constants
+const SAMPLE_RATE = 16000;
+const BASELINE_WINDOW_S = 0.5;
+const SILENCE_MARGIN_DB = 8;
+
+function calcRmsDb(buf: Buffer): number {
+  let sum = 0;
+  const samples = buf.length / 2;
+  for (let i = 0; i < buf.length; i += 2) {
+    const s = buf.readInt16LE(i);
+    sum += s * s;
+  }
+  const rms = Math.sqrt(sum / samples);
+  return rms > 0 ? 20 * Math.log10(rms / 32768) : -160;
+}
+
+function writeWav(pcmData: Buffer, sampleRate: number, channels: number, bitsPerSample: number, filePath: string) {
+  const dataSize = pcmData.length;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28);
+  header.writeUInt16LE(channels * bitsPerSample / 8, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+  fs.writeFileSync(filePath, Buffer.concat([header, pcmData]));
+}
 
 function playSound(name: string) {
   spawn('afplay', [path.join(SOUNDS, `${name}.aiff`)], { detached: true, stdio: 'ignore' }).unref();
@@ -140,6 +176,21 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     }
   }
 
+  // Silence detection state
+  let pcmChunks: Buffer[] = [];
+  let baselineSamples: number[] = [];
+  let baseline = -160;
+  let baselineEstablished = false;
+  let silenceStartedAt = 0;
+
+  function resetSilenceState() {
+    pcmChunks = [];
+    baselineSamples = [];
+    baseline = -160;
+    baselineEstablished = false;
+    silenceStartedAt = 0;
+  }
+
   function startRecording() {
     if (state !== 'idle') return;
 
@@ -151,12 +202,48 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     recordingTabId = getActiveTabId();
     setState('recording');
     playSound('Glass');
+    resetSilenceState();
 
     // Clean up any old wav
     try { fs.unlinkSync(WAV_PATH); } catch { /* ignore */ }
 
-    soxProc = spawn(SOX, ['-d', '-r', '16000', '-c', '1', '-b', '16', WAV_PATH], {
-      stdio: 'ignore',
+    const config = loadConfig();
+
+    // Pipe raw PCM to stdout for silence detection
+    soxProc = spawn(SOX, ['-d', '-t', 'raw', '-r', String(SAMPLE_RATE), '-c', '1', '-b', '16', '-e', 'signed', '-'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+
+    soxProc.stdout!.on('data', (chunk: Buffer) => {
+      pcmChunks.push(chunk);
+
+      if (!config.voiceAutoStop) return;
+
+      const db = calcRmsDb(chunk);
+      const elapsed = (Date.now() - recordingStartedAt) / 1000;
+
+      // Phase 1: establish baseline
+      if (!baselineEstablished) {
+        baselineSamples.push(db);
+        if (elapsed >= BASELINE_WINDOW_S) {
+          baseline = baselineSamples.reduce((a, b) => a + b, 0) / baselineSamples.length;
+          baselineEstablished = true;
+          log(`voice: baseline ${baseline.toFixed(1)} dB (${baselineSamples.length} samples)`);
+        }
+        return;
+      }
+
+      // Phase 2: detect silence
+      const isSilent = db < baseline + SILENCE_MARGIN_DB;
+      if (isSilent) {
+        if (silenceStartedAt === 0) silenceStartedAt = Date.now();
+        else if ((Date.now() - silenceStartedAt) / 1000 >= config.voiceAutoStopSeconds) {
+          log(`voice: auto-stop after ${config.voiceAutoStopSeconds}s silence`);
+          stopAndTranscribe();
+        }
+      } else {
+        silenceStartedAt = 0;
+      }
     });
 
     soxProc.on('error', (err) => {
@@ -228,7 +315,6 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
   function stopAndTranscribe() {
     if (state !== 'recording' || !soxProc) return;
 
-    // Kill sox to finalize the wav file
     soxProc.kill('SIGTERM');
     soxProc = null;
     playSound('Purr');
@@ -239,20 +325,20 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
     const useAPI = durationS >= ADAPTIVE_THRESHOLD_S;
     log(`voice: recording was ${durationS.toFixed(1)}s, using ${useAPI ? 'API' : 'local'}`);
 
-    // Small delay for file to finalize
-    setTimeout(() => {
-      if (!fs.existsSync(WAV_PATH)) {
-        log('voice: no wav file found');
-        setState('idle');
-        return;
-      }
+    // Write WAV from accumulated PCM chunks
+    const pcmData = Buffer.concat(pcmChunks);
+    if (pcmData.length === 0) {
+      log('voice: no audio data captured');
+      setState('idle');
+      return;
+    }
+    writeWav(pcmData, SAMPLE_RATE, 1, 16, WAV_PATH);
 
-      if (useAPI) {
-        transcribeAPI(onTranscribed);
-      } else {
-        transcribeLocal(onTranscribed);
-      }
-    }, 200);
+    if (useAPI) {
+      transcribeAPI(onTranscribed);
+    } else {
+      transcribeLocal(onTranscribed);
+    }
   }
 
   function cancelRecording() {
@@ -261,6 +347,7 @@ export function initVoice(deps: VoiceDeps): { stop: () => void } {
       soxProc = null;
     }
 
+    resetSilenceState();
     capturedSelection = null;
     recordingTabId = null;
     setState('idle');

@@ -5,12 +5,16 @@ import os from 'node:os';
 const CONFIG_DIR = path.join(os.homedir(), '.ai-terminal');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
-interface AppConfig {
+export interface AppConfig {
   historyDir: string;
+  voiceAutoStop: boolean;
+  voiceAutoStopSeconds: number;
 }
 
 const DEFAULTS: AppConfig = {
   historyDir: path.join(CONFIG_DIR, 'history'),
+  voiceAutoStop: true,
+  voiceAutoStopSeconds: 3.0,
 };
 
 export function loadConfig(): AppConfig {
@@ -20,12 +24,14 @@ export function loadConfig(): AppConfig {
 
   try {
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    // Expand ~ in paths
     const historyDir = (raw.historyDir || DEFAULTS.historyDir)
       .replace(/^~/, os.homedir());
-    return { historyDir };
+    return {
+      historyDir,
+      voiceAutoStop: raw.voiceAutoStop ?? DEFAULTS.voiceAutoStop,
+      voiceAutoStopSeconds: raw.voiceAutoStopSeconds ?? DEFAULTS.voiceAutoStopSeconds,
+    };
   } catch {
-    // Write defaults on first run
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULTS, null, 2));
     return { ...DEFAULTS };
   }
