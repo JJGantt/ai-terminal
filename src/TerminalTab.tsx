@@ -119,9 +119,17 @@ export default function TerminalTab({ id, active, resumeSessionId, panelNav }: P
   // Re-fit when window gains focus (reclaim dimensions from phone)
   useEffect(() => {
     if (!active) return;
-    return window.app.onRefit(() => {
+    const cleanupRefit = window.app.onRefit(() => {
       fitRef.current?.fit();
     });
+    // Also re-fit on click — covers alwaysOnTop windows that never lose focus
+    const el = containerRef.current;
+    const handleClick = () => fitRef.current?.fit();
+    el?.addEventListener('click', handleClick);
+    return () => {
+      cleanupRefit();
+      el?.removeEventListener('click', handleClick);
+    };
   }, [active, id]);
 
   return (
