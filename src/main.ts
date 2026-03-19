@@ -21,6 +21,7 @@ const log = (...args: unknown[]) => {
 log('main process starting');
 
 const ptySessions = new Map<string, ReturnType<typeof pty.spawn>>();
+const tabCwds = new Map<string, string>(); // tabId → cwd used at spawn time
 let activeTabId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
 
@@ -677,6 +678,7 @@ function spawnPty(id: string, resumeSessionId: string | undefined, sender: WebCo
   });
 
   ptySessions.set(id, ptyProcess);
+  tabCwds.set(id, cwd);
   tabNames.set(id, 'New Session');
   tabWorking.set(id, false);
   broadcastSessions();
@@ -768,7 +770,7 @@ function findSessionJSONL(sessionId: string): string | null {
   return null;
 }
 
-// Resolve the JSONL path for a tab, with fallback via tmux cwd if tabSessionIds is stale.
+// Resolve the JSONL path for a tab. Falls back to cwd-based lookup if tabSessionIds is stale.
 function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: string } | null {
   // 1. Try cached mapping
   const cachedId = tabSessionIds.get(tabId);
@@ -776,12 +778,10 @@ function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: stri
     const p = findSessionJSONL(cachedId);
     if (p) return { jsonlPath: p, sessionId: cachedId };
   }
-  // 2. Fallback: tmux pane cwd → project dir → most recently modified JSONL
+  // 2. Fallback: use the cwd the PTY was spawned with → find project dir → most recent JSONL
+  const cwd = tabCwds.get(tabId);
+  if (!cwd) return null;
   try {
-    const tmuxName = `ai-tab-${tabId.slice(0, 8)}`;
-    const cwd = execSync(`tmux display-message -t ${tmuxName} -p '#{pane_current_path}'`,
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    if (!cwd) return null;
     const dirName = cwd.replace(/\//g, '-'); // '/Users/jaredgantt/repos' → '-Users-jaredgantt-repos'
     const projectDir = path.join(PROJECTS_ROOT, dirName);
     if (!fs.existsSync(projectDir)) return null;
@@ -794,7 +794,7 @@ function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: stri
     const sessionId = files[0].f.replace('.jsonl', '');
     tabSessionIds.set(tabId, sessionId); // update cache
     return { jsonlPath, sessionId };
-  } catch { /* tmux not available or session not found */ }
+  } catch { /* ignore */ }
   return null;
 }
 
