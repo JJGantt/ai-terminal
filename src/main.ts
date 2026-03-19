@@ -194,27 +194,25 @@ wsServer.on('connection', (ws: WebSocket) => {
           break;
         }
         case 'transcript_subscribe': {
-          const sessionId = tabSessionIds.get(msg.tabId);
-          if (!sessionId) { ws.send(JSON.stringify({ type: 'transcript', tabId: msg.tabId, messages: [] })); break; }
+          const resolved = resolveJSONLForTab(msg.tabId);
+          if (!resolved) { ws.send(JSON.stringify({ type: 'transcript', tabId: msg.tabId, messages: [] })); break; }
+          const { jsonlPath, sessionId } = resolved;
           const messages = parseTranscript(sessionId);
           ws.send(JSON.stringify({ type: 'transcript', tabId: msg.tabId, messages }));
           // Watch for updates
-          const jsonlPath = findSessionJSONL(sessionId);
-          if (jsonlPath) {
-            const key = `ws:${msg.tabId}`;
-            if (!wsTranscriptWatchers.has(key)) {
-              let lastSize = 0;
-              try { lastSize = fs.statSync(jsonlPath).size; } catch {}
-              fs.watchFile(jsonlPath, { interval: 500 }, (curr) => {
-                if (curr.size <= lastSize) return;
-                lastSize = curr.size;
-                const updated = parseTranscript(sessionId);
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: 'transcript_update', tabId: msg.tabId, messages: updated }));
-                }
-              });
-              wsTranscriptWatchers.set(key, jsonlPath);
-            }
+          const key = `ws:${msg.tabId}`;
+          if (!wsTranscriptWatchers.has(key)) {
+            let lastSize = 0;
+            try { lastSize = fs.statSync(jsonlPath).size; } catch {}
+            fs.watchFile(jsonlPath, { interval: 500 }, (curr) => {
+              if (curr.size <= lastSize) return;
+              lastSize = curr.size;
+              const updated = parseTranscript(sessionId);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'transcript_update', tabId: msg.tabId, messages: updated }));
+              }
+            });
+            wsTranscriptWatchers.set(key, jsonlPath);
           }
           break;
         }
@@ -770,6 +768,36 @@ function findSessionJSONL(sessionId: string): string | null {
   return null;
 }
 
+// Resolve the JSONL path for a tab, with fallback via tmux cwd if tabSessionIds is stale.
+function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: string } | null {
+  // 1. Try cached mapping
+  const cachedId = tabSessionIds.get(tabId);
+  if (cachedId) {
+    const p = findSessionJSONL(cachedId);
+    if (p) return { jsonlPath: p, sessionId: cachedId };
+  }
+  // 2. Fallback: tmux pane cwd → project dir → most recently modified JSONL
+  try {
+    const tmuxName = `ai-tab-${tabId.slice(0, 8)}`;
+    const cwd = execSync(`tmux display-message -t ${tmuxName} -p '#{pane_current_path}'`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (!cwd) return null;
+    const dirName = cwd.replace(/\//g, '-'); // '/Users/jaredgantt/repos' → '-Users-jaredgantt-repos'
+    const projectDir = path.join(PROJECTS_ROOT, dirName);
+    if (!fs.existsSync(projectDir)) return null;
+    const files = fs.readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    if (!files.length) return null;
+    const jsonlPath = path.join(projectDir, files[0].f);
+    const sessionId = files[0].f.replace('.jsonl', '');
+    tabSessionIds.set(tabId, sessionId); // update cache
+    return { jsonlPath, sessionId };
+  } catch { /* tmux not available or session not found */ }
+  return null;
+}
+
 function readConversationPairs(filePath: string, maxPairs: number): { user: string; assistant: string }[] {
   const content = fs.readFileSync(filePath, 'utf-8');
   const lines = content.split('\n');
@@ -1056,16 +1084,15 @@ function parseTranscript(sessionId: string): TranscriptMessage[] {
 const transcriptWatchers = new Map<string, { watcher: fs.StatWatcher; lastSize: number; sender: WebContents }>();
 
 ipcMain.handle('transcript:get', (_e, tabId: string) => {
-  const sessionId = tabSessionIds.get(tabId);
-  if (!sessionId) return [];
-  return parseTranscript(sessionId);
+  const resolved = resolveJSONLForTab(tabId);
+  if (!resolved) return [];
+  return parseTranscript(resolved.sessionId);
 });
 
 ipcMain.on('transcript:subscribe', (event, tabId: string) => {
-  const sessionId = tabSessionIds.get(tabId);
-  if (!sessionId) return;
-  const jsonlPath = findSessionJSONL(sessionId);
-  if (!jsonlPath) return;
+  const resolved = resolveJSONLForTab(tabId);
+  if (!resolved) return;
+  const { jsonlPath, sessionId } = resolved;
 
   // Clean up existing watcher for this tab
   const existing = transcriptWatchers.get(tabId);
@@ -1089,11 +1116,8 @@ ipcMain.on('transcript:subscribe', (event, tabId: string) => {
 ipcMain.on('transcript:unsubscribe', (_e, tabId: string) => {
   const entry = transcriptWatchers.get(tabId);
   if (!entry) return;
-  const sessionId = tabSessionIds.get(tabId);
-  if (sessionId) {
-    const jsonlPath = findSessionJSONL(sessionId);
-    if (jsonlPath) fs.unwatchFile(jsonlPath);
-  }
+  const resolved = resolveJSONLForTab(tabId);
+  if (resolved) fs.unwatchFile(resolved.jsonlPath);
   transcriptWatchers.delete(tabId);
 });
 
