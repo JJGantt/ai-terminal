@@ -22,6 +22,7 @@ log('main process starting');
 
 const ptySessions = new Map<string, ReturnType<typeof pty.spawn>>();
 const tabCwds = new Map<string, string>(); // tabId → cwd used at spawn time
+const tabSpawnTime = new Map<string, number>(); // tabId → spawn timestamp ms
 let activeTabId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
 
@@ -679,6 +680,7 @@ function spawnPty(id: string, resumeSessionId: string | undefined, sender: WebCo
 
   ptySessions.set(id, ptyProcess);
   tabCwds.set(id, cwd);
+  tabSpawnTime.set(id, Date.now());
   tabNames.set(id, 'New Session');
   tabWorking.set(id, false);
   broadcastSessions();
@@ -779,8 +781,10 @@ function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: stri
     if (p) return { jsonlPath: p, sessionId: cachedId };
   }
   // 2. Fallback: use the cwd the PTY was spawned with → find project dir → most recent JSONL
+  // Only consider JSONL files modified after this tab was spawned (avoids showing stale old sessions).
   const cwd = tabCwds.get(tabId);
   if (!cwd) return null;
+  const spawnTime = tabSpawnTime.get(tabId) ?? 0;
   try {
     const dirName = cwd.replace(/\//g, '-'); // '/Users/jaredgantt/repos' → '-Users-jaredgantt-repos'
     const projectDir = path.join(PROJECTS_ROOT, dirName);
@@ -788,6 +792,7 @@ function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: stri
     const files = fs.readdirSync(projectDir)
       .filter(f => f.endsWith('.jsonl'))
       .map(f => ({ f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+      .filter(({ mtime }) => mtime > spawnTime) // only sessions that started after this tab
       .sort((a, b) => b.mtime - a.mtime);
     if (!files.length) return null;
     const jsonlPath = path.join(projectDir, files[0].f);
@@ -867,6 +872,7 @@ function generateName(sessionId: string, tabId: string, pairs: { user: string; a
     log('tab naming:', sessionId, '→', name);
     nameCache[sessionId] = name;
     saveNameCache();
+    piSend({ type: 'cache_name', sessionId, name }); // keep Pi in sync immediately
     tabNames.set(tabId, name);
     broadcastSessions();
 
@@ -916,6 +922,7 @@ ipcMain.on('tab:set-name', (_e, tabId: string, name: string) => {
   if (sessionId && name.trim()) {
     nameCache[sessionId] = name.trim();
     saveNameCache();
+    piSend({ type: 'cache_name', sessionId, name: name.trim() });
     log('manual rename:', sessionId, '→', name.trim());
   }
   tabNames.set(tabId, name.trim());
