@@ -1029,17 +1029,20 @@ function parseTranscript(sessionId: string): TranscriptMessage[] {
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        if (msg.type === 'user' && msg.message?.role === 'user') {
+        if (msg.type === 'user' && msg.message?.role === 'user' && !msg.isMeta) {
           const c = msg.message.content;
           let text = '';
-          if (typeof c === 'string') text = c;
-          else if (Array.isArray(c)) {
+          if (typeof c === 'string') {
+            // Skip tagged system/meta content (<local-command-stdout>, <command-name>, etc.)
+            if (!c.trimStart().startsWith('<')) text = c;
+          } else if (Array.isArray(c)) {
             text = c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
           }
           if (text.trim()) messages.push({ role: 'user', text: text.trim() });
         } else if (msg.type === 'assistant' && msg.message?.role === 'assistant') {
           const c = msg.message.content;
           if (Array.isArray(c)) {
+            // Skip thinking blocks, only include text
             const text = c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim();
             if (text) messages.push({ role: 'assistant', text });
           }
