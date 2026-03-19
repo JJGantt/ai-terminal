@@ -467,6 +467,14 @@ export default function App() {
     return window.app.onCloseTab(() => closeTab(activeIdRef.current));
   }, [closeTab]);
 
+  // Tab killed externally (e.g. phone closed it via WebSocket)
+  useEffect(() => {
+    return window.pty.onKilled((tabId) => {
+      console.log('[App] tab:killed received for', tabId);
+      closeTab(tabId);
+    });
+  }, [closeTab]);
+
   return (
     <div className="app">
       <div className={`tab-bar ${barMode ? 'bar-mode' : ''}`}>

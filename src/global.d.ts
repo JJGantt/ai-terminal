@@ -34,6 +34,7 @@ interface Window {
     onSessionMapped: (cb: (tabId: string, sessionId: string) => void) => () => void;
     onBell: (cb: (tabId: string) => void) => () => void;
     onWorking: (cb: (tabId: string) => void) => () => void;
+    onKilled: (cb: (tabId: string) => void) => () => void;
   };
   app: {
     setBarMode: (enabled: boolean) => void;

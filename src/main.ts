@@ -136,6 +136,9 @@ wsServer.on('connection', (ws: WebSocket) => {
             scrollback.delete(msg.tabId);
             wsClients.delete(msg.tabId);
             broadcastSessions();
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('tab:killed', msg.tabId);
+            }
           }
           break;
         }

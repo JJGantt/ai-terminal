@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld('pty', {
     ipcRenderer.on('tab:bell', handler);
     return () => ipcRenderer.removeListener('tab:bell', handler);
   },
+  onKilled: (cb: (tabId: string) => void) => {
+    const handler = (_: unknown, tabId: string) => cb(tabId);
+    ipcRenderer.on('tab:killed', handler);
+    return () => ipcRenderer.removeListener('tab:killed', handler);
+  },
   onWorking: (cb: (tabId: string) => void) => {
     const handler = (_: unknown, tabId: string) => cb(tabId);
     ipcRenderer.on('tab:working', handler);
