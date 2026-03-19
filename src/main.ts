@@ -21,8 +21,6 @@ const log = (...args: unknown[]) => {
 log('main process starting');
 
 const ptySessions = new Map<string, ReturnType<typeof pty.spawn>>();
-const tabCwds = new Map<string, string>(); // tabId → cwd used at spawn time
-const tabSpawnTime = new Map<string, number>(); // tabId → spawn timestamp ms
 let activeTabId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
 
@@ -679,8 +677,6 @@ function spawnPty(id: string, resumeSessionId: string | undefined, sender: WebCo
   });
 
   ptySessions.set(id, ptyProcess);
-  tabCwds.set(id, cwd);
-  tabSpawnTime.set(id, Date.now());
   tabNames.set(id, 'New Session');
   tabWorking.set(id, false);
   broadcastSessions();
@@ -772,35 +768,14 @@ function findSessionJSONL(sessionId: string): string | null {
   return null;
 }
 
-// Resolve the JSONL path for a tab. Falls back to cwd-based lookup if tabSessionIds is stale.
+// Resolve the JSONL path for a tab via tabSessionIds (set by stop hook).
+// Returns null if the stop hook hasn't fired yet — transcript will be empty until first exchange.
 function resolveJSONLForTab(tabId: string): { jsonlPath: string; sessionId: string } | null {
-  // 1. Try cached mapping
-  const cachedId = tabSessionIds.get(tabId);
-  if (cachedId) {
-    const p = findSessionJSONL(cachedId);
-    if (p) return { jsonlPath: p, sessionId: cachedId };
-  }
-  // 2. Fallback: use the cwd the PTY was spawned with → find project dir → most recent JSONL
-  // Only consider JSONL files modified after this tab was spawned (avoids showing stale old sessions).
-  const cwd = tabCwds.get(tabId);
-  if (!cwd) return null;
-  const spawnTime = tabSpawnTime.get(tabId) ?? 0;
-  try {
-    const dirName = cwd.replace(/\//g, '-'); // '/Users/jaredgantt/repos' → '-Users-jaredgantt-repos'
-    const projectDir = path.join(PROJECTS_ROOT, dirName);
-    if (!fs.existsSync(projectDir)) return null;
-    const files = fs.readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-      .filter(({ mtime }) => mtime > spawnTime) // only sessions that started after this tab
-      .sort((a, b) => b.mtime - a.mtime);
-    if (!files.length) return null;
-    const jsonlPath = path.join(projectDir, files[0].f);
-    const sessionId = files[0].f.replace('.jsonl', '');
-    tabSessionIds.set(tabId, sessionId); // update cache
-    return { jsonlPath, sessionId };
-  } catch { /* ignore */ }
-  return null;
+  const sessionId = tabSessionIds.get(tabId);
+  if (!sessionId) return null;
+  const jsonlPath = findSessionJSONL(sessionId);
+  if (!jsonlPath) return null;
+  return { jsonlPath, sessionId };
 }
 
 function readConversationPairs(filePath: string, maxPairs: number): { user: string; assistant: string }[] {
