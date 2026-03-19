@@ -29,6 +29,7 @@ const WS_PORT = 27183;
 const MAX_SCROLLBACK = 100 * 1024; // 100KB per session
 const scrollback = new Map<string, string>(); // tabId → raw PTY buffer
 const wsClients = new Map<string, Set<WebSocket>>(); // tabId → subscribers
+const wsTranscriptWatchers = new Map<string, string>(); // key → jsonlPath
 const tabNames = new Map<string, string>(); // tabId → display name
 const tabWorking = new Map<string, boolean>(); // tabId → working state
 
@@ -192,6 +193,37 @@ wsServer.on('connection', (ws: WebSocket) => {
           generateName(sessionId, liveTabId || `regen-${sessionId}`, pairs);
           break;
         }
+        case 'transcript_subscribe': {
+          const sessionId = tabSessionIds.get(msg.tabId);
+          if (!sessionId) { ws.send(JSON.stringify({ type: 'transcript', tabId: msg.tabId, messages: [] })); break; }
+          const messages = parseTranscript(sessionId);
+          ws.send(JSON.stringify({ type: 'transcript', tabId: msg.tabId, messages }));
+          // Watch for updates
+          const jsonlPath = findSessionJSONL(sessionId);
+          if (jsonlPath) {
+            const key = `ws:${msg.tabId}`;
+            if (!wsTranscriptWatchers.has(key)) {
+              let lastSize = 0;
+              try { lastSize = fs.statSync(jsonlPath).size; } catch {}
+              fs.watchFile(jsonlPath, { interval: 500 }, (curr) => {
+                if (curr.size <= lastSize) return;
+                lastSize = curr.size;
+                const updated = parseTranscript(sessionId);
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'transcript_update', tabId: msg.tabId, messages: updated }));
+                }
+              });
+              wsTranscriptWatchers.set(key, jsonlPath);
+            }
+          }
+          break;
+        }
+        case 'transcript_unsubscribe': {
+          const key = `ws:${msg.tabId}`;
+          const path = wsTranscriptWatchers.get(key);
+          if (path) { fs.unwatchFile(path); wsTranscriptWatchers.delete(key); }
+          break;
+        }
       }
     } catch (e) {
       log('ws error:', (e as Error).message);
@@ -200,6 +232,10 @@ wsServer.on('connection', (ws: WebSocket) => {
 
   ws.on('close', () => {
     if (currentTab) wsClients.get(currentTab)?.delete(ws);
+    // Clean up transcript watchers for this client
+    for (const [key, path] of wsTranscriptWatchers) {
+      if (key.startsWith('ws:')) { fs.unwatchFile(path); wsTranscriptWatchers.delete(key); }
+    }
   });
 });
 
