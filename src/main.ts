@@ -41,7 +41,9 @@ function getTabList() {
 }
 
 function broadcastSessions() {
-  const msg = JSON.stringify({ type: 'sessions', tabs: getTabList() });
+  const tabs = getTabList();
+  log('broadcastSessions:', tabs.length, 'tabs,', wsServer.clients.size, 'ws clients, ids:', tabs.map(t => t.id.slice(0, 8)).join(','));
+  const msg = JSON.stringify({ type: 'sessions', tabs });
   wsServer.clients.forEach(ws => {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   });
